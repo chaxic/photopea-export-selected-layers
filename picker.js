@@ -37,6 +37,18 @@ async function storeDirectoryHandle(handle) {
   database.close();
 }
 
+async function loadDirectoryHandle() {
+  const database = await openDatabase();
+  const handle = await new Promise((resolve, reject) => {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const request = transaction.objectStore(STORE_NAME).get(DIRECTORY_KEY);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error);
+  });
+  database.close();
+  return handle;
+}
+
 function notifyOpener(type, detail = {}) {
   if (!window.opener) return;
   window.opener.postMessage({ type, ...detail }, window.location.origin);
@@ -47,6 +59,24 @@ function setStatus(message, kind = "") {
   if (!status) return;
   status.textContent = message;
   status.dataset.kind = kind;
+}
+
+function setPickerCopy(title, copy, buttonLabel) {
+  const heading = document.querySelector("#picker-title");
+  const description = document.querySelector("#picker-copy");
+  const button = document.querySelector("#choose-folder");
+  if (heading) heading.textContent = title;
+  if (description) description.textContent = copy;
+  if (button) button.textContent = buttonLabel;
+}
+
+let rememberedHandle = null;
+
+async function finishWithHandle(handle) {
+  await storeDirectoryHandle(handle);
+  setStatus(`Using “${handle.name}”. Returning to Photopea…`, "ok");
+  notifyOpener(READY_MESSAGE, { name: handle.name, handle });
+  setTimeout(() => window.close(), 650);
 }
 
 async function chooseFolder() {
@@ -64,16 +94,39 @@ async function chooseFolder() {
   setStatus("Waiting for a folder…");
 
   try {
+    if (rememberedHandle) {
+      let permission = await rememberedHandle.queryPermission({
+        mode: "readwrite",
+      });
+      if (permission !== "granted") {
+        permission = await rememberedHandle.requestPermission({
+          mode: "readwrite",
+        });
+      }
+
+      if (permission === "granted") {
+        await finishWithHandle(rememberedHandle);
+        return;
+      }
+
+      rememberedHandle = null;
+      setPickerCopy(
+        "Choose the workfile folder",
+        "Access was not granted. Choose the folder again, or close this window and use ZIP download.",
+        "Choose folder",
+      );
+      setStatus("Click Choose folder to select a destination.", "error");
+      button.disabled = false;
+      return;
+    }
+
     const handle = await window.showDirectoryPicker({
       id: "photopea-export-selected-layers",
       mode: "readwrite",
       startIn: "pictures",
     });
 
-    await storeDirectoryHandle(handle);
-    setStatus(`Using “${handle.name}”. You can return to Photopea.`, "ok");
-    notifyOpener(READY_MESSAGE, { name: handle.name, handle });
-    setTimeout(() => window.close(), 650);
+    await finishWithHandle(handle);
   } catch (error) {
     if (error?.name === "AbortError") {
       setStatus("No folder was selected.", "error");
@@ -89,6 +142,28 @@ async function chooseFolder() {
   }
 }
 
+async function initializePicker() {
+  const mode = new URLSearchParams(window.location.search).get("mode");
+  if (mode === "choose" || mode === "change") return;
+
+  try {
+    rememberedHandle = await loadDirectoryHandle();
+  } catch {
+    rememberedHandle = null;
+  }
+
+  if (!rememberedHandle) return;
+
+  setPickerCopy(
+    `Restore access to “${rememberedHandle.name}”`,
+    "Browsers pause folder access after a session ends. Restore access here, then the export will continue automatically.",
+    "Restore access",
+  );
+  setStatus("Your remembered folder is ready to reconnect.");
+}
+
 document
   .querySelector("#choose-folder")
   ?.addEventListener("click", chooseFolder);
+
+initializePicker();
