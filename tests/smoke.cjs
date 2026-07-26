@@ -73,7 +73,7 @@ assert.doesNotMatch(
 assert.match(source, /openFolderPicker\("restore"\)/);
 assert.equal(
   helpers.versionedPluginUrl(),
-  "https://example.com/photopea-export-selected-layers/?v=1.0.1",
+  "https://example.com/photopea-export-selected-layers/?v=1.0.2",
 );
 
 assert.doesNotThrow(() => new vm.Script(helpers.makeInspectScript()));
