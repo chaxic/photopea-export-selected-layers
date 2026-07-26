@@ -65,6 +65,11 @@ assert.equal(helpers.sanitizeBaseName("Car:Red.png"), "Car_Red");
 assert.equal(helpers.sanitizeBaseName("CON"), "_CON");
 assert.equal(helpers.sanitizeBaseName("  Tree   Oak  "), "Tree Oak");
 assert.match(root.innerHTML, /Export Selected Layers/);
+assert.doesNotMatch(
+  source,
+  /state\.folderHandle\.requestPermission|handle\.requestPermission/,
+);
+assert.match(source, /openFolderPicker\("restore"\)/);
 
 assert.doesNotThrow(() => new vm.Script(helpers.makeInspectScript()));
 assert.doesNotThrow(
