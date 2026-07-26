@@ -271,7 +271,7 @@ function destinationHtml() {
   if (state.folderPermission === "granted") {
     subtitle = "Remembered by this browser";
   } else if (state.folderName) {
-    subtitle = "Permission will be requested before exporting";
+    subtitle = "Access will be restored in a secure folder window";
   }
 
   return `
@@ -594,7 +594,7 @@ function prepareExportItems() {
   });
 }
 
-async function beginExport() {
+function beginExport() {
   if (!state.embedded) {
     setStatus("idle", "Install the plugin to use it inside Photopea.");
     return;
@@ -605,12 +605,15 @@ async function beginExport() {
   if (state.destination === "folder") {
     if (!state.folderHandle) {
       state.exportAfterFolderChoice = true;
-      openFolderPicker();
+      openFolderPicker("choose");
       return;
     }
 
-    const permission = await ensureDirectoryPermission();
-    if (!permission) return;
+    if (state.folderPermission !== "granted") {
+      state.exportAfterFolderChoice = true;
+      openFolderPicker("restore");
+      return;
+    }
   }
 
   inspectSelection(true);
@@ -696,36 +699,7 @@ async function loadStoredDirectoryHandle() {
   render();
 }
 
-async function ensureDirectoryPermission() {
-  const handle = state.folderHandle;
-  if (!handle) return false;
-
-  try {
-    let permission = await handle.queryPermission({ mode: "readwrite" });
-    if (permission !== "granted") {
-      permission = await handle.requestPermission({ mode: "readwrite" });
-    }
-
-    state.folderPermission = permission;
-    if (permission === "granted") return true;
-
-    state.exportAfterFolderChoice = false;
-    setStatus(
-      "error",
-      "Folder permission was not granted. Choose the folder again or use ZIP download.",
-    );
-  } catch (error) {
-    setStatus(
-      "error",
-      error?.message ||
-        "This browser could not grant access to the selected folder.",
-    );
-  }
-
-  return false;
-}
-
-function openFolderPicker() {
+function openFolderPicker(mode = "restore") {
   if (!state.embedded) {
     setStatus("idle", "Install the plugin to choose an export folder.");
     return;
@@ -733,6 +707,7 @@ function openFolderPicker() {
 
   const pickerUrl = new URL("picker.html", pluginBaseUrl());
   pickerUrl.searchParams.set("from", "photopea");
+  pickerUrl.searchParams.set("mode", mode);
   state.pickerWindow = window.open(
     pickerUrl.href,
     "photopea-export-folder",
@@ -750,7 +725,9 @@ function openFolderPicker() {
 
   setStatus(
     "warning",
-    "Choose the folder containing your workfile in the new window.",
+    mode === "restore"
+      ? "Restore folder access in the secure window to continue exporting."
+      : "Choose the folder containing your workfile in the new window.",
   );
 }
 
@@ -1043,7 +1020,7 @@ function bindEvents() {
     .querySelector("#choose-folder")
     ?.addEventListener("click", () => {
       state.exportAfterFolderChoice = false;
-      openFolderPicker();
+      openFolderPicker("change");
     });
 
   document
