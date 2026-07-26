@@ -7,6 +7,7 @@ const READY_MESSAGE = "EXPORT_SELECTED_DIRECTORY_READY";
 const CANCEL_MESSAGE = "EXPORT_SELECTED_DIRECTORY_CANCELLED";
 const REPOSITORY_URL =
   "https://github.com/chaxic/photopea-export-selected-layers";
+const PLUGIN_VERSION = "1.0.1";
 
 const DB_NAME = "photopea-export-selected-layers";
 const DB_VERSION = 1;
@@ -54,6 +55,12 @@ function escapeHtml(value) {
 
 function pluginBaseUrl() {
   return new URL("./", document.baseURI).href;
+}
+
+function versionedPluginUrl() {
+  const url = new URL(pluginBaseUrl());
+  url.searchParams.set("v", PLUGIN_VERSION);
+  return url.href;
 }
 
 function formatExtension(format) {
@@ -993,7 +1000,7 @@ function downloadInstaller() {
   const base = pluginBaseUrl();
   const manifest = {
     name: "Export Selected Layers",
-    url: base,
+    url: versionedPluginUrl(),
     icon: `===${new URL("icon.svg", base).href}`,
   };
   const blob = new Blob([JSON.stringify(manifest, null, 2)], {
