@@ -54,7 +54,8 @@ globalThis.__test = {
   sanitizeBaseName,
   createStoredZip,
   makeInspectScript,
-  makeExportScript
+  makeExportScript,
+  versionedPluginUrl
 };`,
   context,
 );
@@ -70,6 +71,10 @@ assert.doesNotMatch(
   /state\.folderHandle\.requestPermission|handle\.requestPermission/,
 );
 assert.match(source, /openFolderPicker\("restore"\)/);
+assert.equal(
+  helpers.versionedPluginUrl(),
+  "https://example.com/photopea-export-selected-layers/?v=1.0.1",
+);
 
 assert.doesNotThrow(() => new vm.Script(helpers.makeInspectScript()));
 assert.doesNotThrow(
