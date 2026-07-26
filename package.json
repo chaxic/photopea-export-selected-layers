@@ -1,0 +1,9 @@
+{
+  "name": "photopea-export-selected-layers",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Export selected Photopea layers as individual image files.",
+  "scripts": {
+    "test": "node tests/smoke.cjs"
+  }
+}

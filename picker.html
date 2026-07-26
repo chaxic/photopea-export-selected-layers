@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Choose a local destination for the Export Selected Layers Photopea plugin."
+    />
+    <title>Choose export folder</title>
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./style.css" />
+    <script src="./picker.js" defer></script>
+  </head>
+  <body class="picker-page">
+    <main class="picker-card">
+      <div class="picker-icon" aria-hidden="true">
+        <svg viewBox="0 0 48 48">
+          <path d="M5.5 14.5h14l4 5h19v19h-37z"></path>
+          <path d="M9.5 10h12l4 4"></path>
+          <path d="M24 25v9m0 0-4-4m4 4 4-4"></path>
+        </svg>
+      </div>
+      <p class="eyebrow">Export Selected Layers</p>
+      <h1>Choose the workfile folder</h1>
+      <p class="picker-copy">
+        Photopea cannot reveal the folder of a local workfile to plugins. Choose it
+        once and this browser can remember it for future exports.
+      </p>
+      <button id="choose-folder" class="download-button" type="button">
+        Choose folder
+      </button>
+      <p id="picker-status" class="picker-status" role="status" aria-live="polite">
+        Your files stay on this device.
+      </p>
+    </main>
+  </body>
+</html>
