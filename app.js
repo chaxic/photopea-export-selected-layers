@@ -7,7 +7,10 @@ const READY_MESSAGE = "EXPORT_SELECTED_DIRECTORY_READY";
 const CANCEL_MESSAGE = "EXPORT_SELECTED_DIRECTORY_CANCELLED";
 const REPOSITORY_URL =
   "https://github.com/chaxic/photopea-export-selected-layers";
-const PLUGIN_VERSION = "1.0.11";
+const PLUGIN_VERSION = "1.0.12";
+const TESTED_PHOTOPEA_VERSION = "5.6";
+const TESTED_PHOTOPEA_SCRIPTING_VERSION = "30";
+const TESTED_DATE = "27 Jul 2026";
 const EXPORT_TIMEOUT_MS = 120000;
 
 const DB_NAME = "photopea-export-selected-layers";
@@ -567,6 +570,14 @@ function panelHtml() {
             <span class="version-badge">v${escapeHtml(PLUGIN_VERSION)}</span>
           </div>
           <p>Save each selected layer as its own file</p>
+          <p
+            class="compatibility-text"
+            title="Photopea scripting app.version ${escapeHtml(TESTED_PHOTOPEA_SCRIPTING_VERSION)} · Verified ${escapeHtml(TESTED_DATE)}"
+          >
+            Tested with Photopea ${escapeHtml(TESTED_PHOTOPEA_VERSION)}
+            <span aria-hidden="true">·</span>
+            scripting v${escapeHtml(TESTED_PHOTOPEA_SCRIPTING_VERSION)}
+          </p>
         </div>
       </header>
 
@@ -630,12 +641,30 @@ function installerHtml() {
   return `
     <div class="install-layout">
       <section class="install-copy">
-        <div class="eyebrow"><span class="eyebrow-dot"></span>Photopea plugin</div>
+        <div class="eyebrow">
+          <span class="eyebrow-dot"></span>
+          Photopea plugin
+          <span class="eyebrow-version">v${escapeHtml(PLUGIN_VERSION)}</span>
+        </div>
         <h1>Export selected layers in one click.</h1>
         <p class="intro">
           Turn selected layers and groups into individual PNG, JPG, or WEBP
           files—without hiding layers one by one.
         </p>
+        <div class="release-meta" aria-label="Current release and compatibility">
+          <div>
+            <span>Current version</span>
+            <strong>v${escapeHtml(PLUGIN_VERSION)}</strong>
+          </div>
+          <div>
+            <span>Tested with</span>
+            <strong>Photopea ${escapeHtml(TESTED_PHOTOPEA_VERSION)}</strong>
+          </div>
+          <div>
+            <span>Verified</span>
+            <strong>${escapeHtml(TESTED_DATE)}</strong>
+          </div>
+        </div>
         <div class="feature-pills">
           <span>Direct folder</span>
           <span>PNG · JPG · WEBP</span>
