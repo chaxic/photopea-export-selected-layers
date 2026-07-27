@@ -8,6 +8,10 @@ const source = fs.readFileSync(
   new URL("../app.js", `file://${__filename}`).pathname,
   "utf8",
 );
+const changelog = fs.readFileSync(
+  new URL("../CHANGELOG.md", `file://${__filename}`).pathname,
+  "utf8",
+);
 const root = { className: "", innerHTML: "" };
 const fakeDocument = {
   baseURI: "https://example.com/photopea-export-selected-layers/",
@@ -79,7 +83,10 @@ assert.equal(helpers.sanitizeBaseName("Car:Red.png"), "Car_Red");
 assert.equal(helpers.sanitizeBaseName("CON"), "_CON");
 assert.equal(helpers.sanitizeBaseName("  Tree   Oak  "), "Tree Oak");
 assert.match(root.innerHTML, /Export Selected Layers/);
-assert.match(root.innerHTML, /v1\.0\.11/);
+assert.match(root.innerHTML, /v1\.0\.12/);
+assert.match(root.innerHTML, /Tested with Photopea 5\.6/);
+assert.match(root.innerHTML, /scripting v30/);
+assert.match(changelog, /## \[1\.0\.12\] - 2026-07-27/);
 assert.doesNotMatch(
   source,
   /state\.folderHandle\.requestPermission|handle\.requestPermission/,
@@ -87,7 +94,7 @@ assert.doesNotMatch(
 assert.match(source, /openFolderPicker\("restore"\)/);
 assert.equal(
   helpers.versionedPluginUrl(),
-  "https://example.com/photopea-export-selected-layers/?v=1.0.11",
+  "https://example.com/photopea-export-selected-layers/?v=1.0.12",
 );
 
 const inspectScript = helpers.makeInspectScript(17);
