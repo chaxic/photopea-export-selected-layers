@@ -76,7 +76,7 @@ assert.equal(helpers.sanitizeBaseName("Car:Red.png"), "Car_Red");
 assert.equal(helpers.sanitizeBaseName("CON"), "_CON");
 assert.equal(helpers.sanitizeBaseName("  Tree   Oak  "), "Tree Oak");
 assert.match(root.innerHTML, /Export Selected Layers/);
-assert.match(root.innerHTML, /v1\.0\.7/);
+assert.match(root.innerHTML, /v1\.0\.8/);
 assert.doesNotMatch(
   source,
   /state\.folderHandle\.requestPermission|handle\.requestPermission/,
@@ -84,7 +84,7 @@ assert.doesNotMatch(
 assert.match(source, /openFolderPicker\("restore"\)/);
 assert.equal(
   helpers.versionedPluginUrl(),
-  "https://example.com/photopea-export-selected-layers/?v=1.0.7",
+  "https://example.com/photopea-export-selected-layers/?v=1.0.8",
 );
 
 const inspectScript = helpers.makeInspectScript(17);
@@ -93,24 +93,53 @@ assert.match(inspectScript, /var requestId = 17/);
 assert.doesNotThrow(
   () =>
     new vm.Script(
-      helpers.makeExportItemScript({
-        path: [0, 1],
-        filename: "Tree Oak.png",
-      }),
+      helpers.makeExportItemScript(
+        {
+          path: [0, 1],
+          filename: "Tree Oak.png",
+        },
+        "__EXPORT_SELECTED_TEMP__test-0",
+      ),
     ),
 );
-assert.doesNotThrow(() => new vm.Script(helpers.makeCleanupScript()));
+assert.doesNotThrow(
+  () =>
+    new vm.Script(
+      helpers.makeCleanupScript(
+        "__EXPORT_SELECTED_TEMP__test-0",
+        "Workfile.psd",
+        "local,0,Workfile.psd",
+      ),
+    ),
+);
 assert.doesNotMatch(
-  helpers.makeExportItemScript({ path: [0], filename: "Car Red.png" }),
+  helpers.makeExportItemScript(
+    { path: [0], filename: "Car Red.png" },
+    "__EXPORT_SELECTED_TEMP__test-0",
+  ),
   /saveToOE\(settings\.format\);\s*temporaryDocument\.close/,
 );
 assert.match(
-  helpers.makeExportItemScript({ path: [0], filename: "Car Red.png" }),
+  helpers.makeExportItemScript(
+    { path: [0], filename: "Car Red.png" },
+    "__EXPORT_SELECTED_TEMP__test-0",
+  ),
   /sourceDocument\.duplicate\(\);\s*temporaryDocument = app\.activeDocument/,
 );
 assert.doesNotMatch(
-  helpers.makeExportItemScript({ path: [0], filename: "Car Red.png" }),
+  helpers.makeExportItemScript(
+    { path: [0], filename: "Car Red.png" },
+    "__EXPORT_SELECTED_TEMP__test-0",
+  ),
   /temporaryDocument = sourceDocument\.duplicate\(\)/,
+);
+assert.doesNotMatch(
+  helpers.makeCleanupScript(
+    "__EXPORT_SELECTED_TEMP__test-0",
+    "Workfile.psd",
+    "local,0,Workfile.psd",
+  ),
+  /app\.activeDocument\.close/,
 );
 
 helpers.state.destination = "zip";
@@ -132,6 +161,7 @@ helpers.state.exportSession = {
     item: { path: [0], filename: "Car Red.png" },
     bufferReceived: false,
     doneReceived: false,
+    temporaryDocumentName: "__EXPORT_SELECTED_TEMP__test-0",
   },
   cleanupResult: null,
   finalizing: false,
@@ -188,8 +218,12 @@ const exportedVisibility = [];
 const echoedMessages = [];
 const sourceDocument = {
   layers: sourceLayers.map(cloneLayer),
+  name: "Workfile.psd",
+  source: "local,0,Workfile.psd",
   duplicate() {
     const duplicate = {
+      name: "Workfile.psd",
+      source: "local,0,Workfile.psd",
       layers: this.layers.map(cloneLayer),
       trim() {},
       saveToOE() {
@@ -197,6 +231,7 @@ const sourceDocument = {
       },
       close() {},
     };
+    photopeaContext.app.documents.push(duplicate);
     photopeaContext.app.activeDocument = duplicate;
   },
 };
@@ -218,7 +253,7 @@ vm.runInContext(
   helpers.makeExportItemScript({
     path: [1, 1],
     filename: "Car Blue.png",
-  }),
+  }, "__EXPORT_SELECTED_TEMP__test-0"),
   photopeaContext,
 );
 
@@ -233,6 +268,35 @@ assert.deepEqual(
   [true, true, true],
 );
 assert.equal(echoedMessages.length, 0);
+
+const temporaryDocument = photopeaContext.app.documents[1];
+let sourceClosed = false;
+let temporaryClosed = false;
+sourceDocument.close = () => {
+  sourceClosed = true;
+};
+temporaryDocument.close = () => {
+  temporaryClosed = true;
+  const index = photopeaContext.app.documents.indexOf(temporaryDocument);
+  photopeaContext.app.documents.splice(index, 1);
+};
+
+// Reproduce Photopea restoring the workfile before the cleanup message runs.
+photopeaContext.app.activeDocument = sourceDocument;
+vm.runInContext(
+  helpers.makeCleanupScript(
+    "__EXPORT_SELECTED_TEMP__test-0",
+    "Workfile.psd",
+    "local,0,Workfile.psd",
+  ),
+  photopeaContext,
+);
+
+assert.equal(sourceClosed, false);
+assert.equal(temporaryClosed, true);
+assert.equal(photopeaContext.app.activeDocument, sourceDocument);
+assert.equal(photopeaContext.app.documents.length, 1);
+assert.match(echoedMessages.at(-1), /"temporaryDocumentFound":true/);
 
 (async () => {
   const zip = helpers.createStoredZip([
