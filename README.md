@@ -46,4 +46,6 @@ The plugin uses Photopea's Live Messaging API. It duplicates the active
 document temporarily, isolates one selected layer or group, and calls
 `saveToOE()` once. After Photopea returns the documented `ArrayBuffer` and
 `done` messages, the plugin closes the temporary document and advances to the
-next layer. The workfile remains unchanged.
+next layer. Photopea's `Document.duplicate()` activates the duplicate but does
+not return it, so the plugin reads the new temporary document from
+`app.activeDocument`. The workfile remains unchanged.
