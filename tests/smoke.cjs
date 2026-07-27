@@ -70,6 +70,7 @@ assert.equal(helpers.sanitizeBaseName("Car:Red.png"), "Car_Red");
 assert.equal(helpers.sanitizeBaseName("CON"), "_CON");
 assert.equal(helpers.sanitizeBaseName("  Tree   Oak  "), "Tree Oak");
 assert.match(root.innerHTML, /Export Selected Layers/);
+assert.match(root.innerHTML, /v1\.0\.5/);
 assert.doesNotMatch(
   source,
   /state\.folderHandle\.requestPermission|handle\.requestPermission/,
@@ -77,7 +78,7 @@ assert.doesNotMatch(
 assert.match(source, /openFolderPicker\("restore"\)/);
 assert.equal(
   helpers.versionedPluginUrl(),
-  "https://example.com/photopea-export-selected-layers/?v=1.0.4",
+  "https://example.com/photopea-export-selected-layers/?v=1.0.5",
 );
 
 const inspectScript = helpers.makeInspectScript(17);
