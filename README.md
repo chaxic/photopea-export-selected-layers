@@ -43,5 +43,7 @@ npm test
 ```
 
 The plugin uses Photopea's Live Messaging API. It duplicates the active
-document temporarily, isolates one selected layer or group, exports it, and
-closes the temporary document without changing the workfile.
+document temporarily, isolates one selected layer or group, and calls
+`saveToOE()` once. After Photopea returns the documented `ArrayBuffer` and
+`done` messages, the plugin closes the temporary document and advances to the
+next layer. The workfile remains unchanged.
