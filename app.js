@@ -7,7 +7,7 @@ const READY_MESSAGE = "EXPORT_SELECTED_DIRECTORY_READY";
 const CANCEL_MESSAGE = "EXPORT_SELECTED_DIRECTORY_CANCELLED";
 const REPOSITORY_URL =
   "https://github.com/chaxic/photopea-export-selected-layers";
-const PLUGIN_VERSION = "1.0.6";
+const PLUGIN_VERSION = "1.0.7";
 const EXPORT_TIMEOUT_MS = 120000;
 
 const DB_NAME = "photopea-export-selected-layers";
@@ -179,8 +179,15 @@ function makeExportItemScript(item) {
     }
 
     sourceDocument = app.activeDocument;
-    temporaryDocument = sourceDocument.duplicate();
-    app.activeDocument = temporaryDocument;
+
+    // Photopea follows Photoshop's side-effect here: duplicate() opens and
+    // activates the copy, but does not return the new Document.
+    sourceDocument.duplicate();
+    temporaryDocument = app.activeDocument;
+
+    if (!temporaryDocument || temporaryDocument === sourceDocument) {
+      throw new Error("Photopea could not create a temporary export document.");
+    }
 
     isolatePath(temporaryDocument.layers, settings.item.path, 0);
 
