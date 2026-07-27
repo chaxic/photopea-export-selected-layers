@@ -7,7 +7,7 @@ const READY_MESSAGE = "EXPORT_SELECTED_DIRECTORY_READY";
 const CANCEL_MESSAGE = "EXPORT_SELECTED_DIRECTORY_CANCELLED";
 const REPOSITORY_URL =
   "https://github.com/chaxic/photopea-export-selected-layers";
-const PLUGIN_VERSION = "1.0.10";
+const PLUGIN_VERSION = "1.0.11";
 const EXPORT_TIMEOUT_MS = 120000;
 
 const DB_NAME = "photopea-export-selected-layers";
@@ -136,24 +136,48 @@ function makeInspectScript(requestId = 0) {
 }());`;
 }
 
-function makeExportItemScript(item, temporaryDocumentName) {
+function makeSnapshotScript() {
+  return `
+(function () {
+  var errorTag = ${JSON.stringify(EXPORT_ERROR_PREFIX)};
+
+  try {
+    if (!app.documents || app.documents.length === 0) {
+      throw new Error("Open a document before exporting layers.");
+    }
+
+    // Send an untouched PSD snapshot to the plugin panel. The panel will open
+    // this buffer as a brand-new document for each selected layer, so no
+    // destructive export operation ever runs in the original workfile.
+    app.activeDocument.saveToOE("psd");
+  } catch (error) {
+    app.echoToOE(errorTag + JSON.stringify({
+      message: error && error.message ? error.message : String(error)
+    }));
+  }
+}());`;
+}
+
+function makePrepareTemporaryScript(
+  item,
+  temporaryDocumentName,
+  sourceDocumentName,
+  sourceDocumentSource,
+) {
   const payload = JSON.stringify({
     item,
     trim: state.trim,
     format: formatSpec(),
     temporaryDocumentName,
+    sourceDocumentName,
+    sourceDocumentSource,
   });
 
   return `
 (function () {
   var errorTag = ${JSON.stringify(EXPORT_ERROR_PREFIX)};
-  var resultTag = ${JSON.stringify(ITEM_RESULT_PREFIX)};
   var settings = ${payload};
-  var sourceDocument = null;
   var temporaryDocument = null;
-  var outputQueued = false;
-  var temporaryDocumentClosed = false;
-  var sourceDocumentRestored = false;
 
   function isolatePath(layers, path, depth) {
     var targetIndex = path[depth];
@@ -175,72 +199,57 @@ function makeExportItemScript(item, temporaryDocumentName) {
     }
   }
 
-  function findDocumentByName(name) {
+  function findSourceDocument() {
     if (!app.documents) return null;
+
     for (var index = 0; index < app.documents.length; index++) {
       var documentRef = app.documents[index];
-      if (String(documentRef.name || "") === name) return documentRef;
+      if (documentRef === temporaryDocument) continue;
+
+      var source = "";
+      try {
+        source = String(documentRef.source || "");
+      } catch (sourceError) {}
+
+      if (
+        settings.sourceDocumentSource &&
+        source === settings.sourceDocumentSource
+      ) {
+        return documentRef;
+      }
     }
+
+    for (var fallbackIndex = 0; fallbackIndex < app.documents.length; fallbackIndex++) {
+      var fallbackDocument = app.documents[fallbackIndex];
+      if (
+        fallbackDocument !== temporaryDocument &&
+        String(fallbackDocument.name || "") === settings.sourceDocumentName
+      ) {
+        return fallbackDocument;
+      }
+    }
+
     return null;
-  }
-
-  function closeTemporaryDocument() {
-    var target =
-      findDocumentByName(settings.temporaryDocumentName) || temporaryDocument;
-
-    if (!target || target === sourceDocument) return false;
-
-    app.activeDocument = target;
-    if (
-      !app.activeDocument ||
-      String(app.activeDocument.name || "") !== settings.temporaryDocumentName
-    ) {
-      return false;
-    }
-
-    target.close(SaveOptions.DONOTSAVECHANGES);
-    return !findDocumentByName(settings.temporaryDocumentName);
-  }
-
-  function restoreSourceDocument() {
-    if (!sourceDocument) return false;
-    app.activeDocument = sourceDocument;
-    return app.activeDocument === sourceDocument;
-  }
-
-  function sendResult(result) {
-    app.echoToOE(resultTag + JSON.stringify(result));
   }
 
   try {
     if (!app.documents || app.documents.length === 0) {
-      app.echoToOE(errorTag + JSON.stringify({
-        message: "Open a document before exporting layers."
-      }));
-      return;
+      throw new Error("Photopea could not open the temporary PSD snapshot.");
     }
 
-    sourceDocument = app.activeDocument;
-
-    // Photopea follows Photoshop's side-effect here: duplicate() opens and
-    // activates the copy, but does not return the new Document.
-    sourceDocument.duplicate();
+    // The active document was opened from the PSD ArrayBuffer held by the
+    // plugin panel. It is independent of the original document.
     temporaryDocument = app.activeDocument;
 
-    if (!temporaryDocument || temporaryDocument === sourceDocument) {
-      throw new Error("Photopea could not create a temporary export document.");
+    if (!temporaryDocument) {
+      throw new Error("Photopea could not activate the temporary PSD snapshot.");
     }
 
-    // Give the duplicate a private identity. saveToOE() can change the active
-    // document before its asynchronous response reaches the plugin, so cleanup
-    // must never rely on whichever document happens to be active at that time.
     temporaryDocument.name = settings.temporaryDocumentName;
 
     isolatePath(temporaryDocument.layers, settings.item.path, 0);
 
-    // Bake live Smart Filters (including Perspective Warp) in the throwaway
-    // document. This keeps saveToOE() from remaining attached to an editable
-    // smart-filter stack while it encodes the file.
+    // All destructive operations run only in the externally reopened snapshot.
     try {
       if (typeof temporaryDocument.rasterizeAllLayers === "function") {
         temporaryDocument.rasterizeAllLayers();
@@ -265,48 +274,133 @@ function makeExportItemScript(item, temporaryDocumentName) {
       } catch (trimError) {}
     }
 
-    // saveToOE() converts and queues the binary response during this script.
-    // Complete cleanup in the same Photopea command so the temporary tab can
-    // never be stranded while the plugin waits for a separate "done" message.
     app.activeDocument = temporaryDocument;
     app.activeDocument.saveToOE(settings.format);
-    outputQueued = true;
+  } catch (error) {
+    try {
+      if (
+        temporaryDocument &&
+        temporaryDocument !== findSourceDocument()
+      ) {
+        app.activeDocument = temporaryDocument;
+        temporaryDocument.close(SaveOptions.DONOTSAVECHANGES);
+      }
+    } catch (closeError) {}
 
-    temporaryDocumentClosed = closeTemporaryDocument();
+    try {
+      var sourceDocument = findSourceDocument();
+      if (sourceDocument) app.activeDocument = sourceDocument;
+    } catch (activationError) {}
+
+    var message = error && error.message ? error.message : String(error);
+    app.echoToOE(errorTag + JSON.stringify({ message: message }));
+  }
+}());`;
+}
+
+function makeCloseTemporaryScript(
+  temporaryDocumentName,
+  sourceDocumentName,
+  sourceDocumentSource,
+) {
+  const payload = JSON.stringify({
+    temporaryDocumentName,
+    sourceDocumentName,
+    sourceDocumentSource,
+  });
+
+  return `
+(function () {
+  var resultTag = ${JSON.stringify(ITEM_RESULT_PREFIX)};
+  var settings = ${payload};
+
+  function documentSource(documentRef) {
+    try {
+      return String(documentRef.source || "");
+    } catch (sourceError) {
+      return "";
+    }
+  }
+
+  function findTemporaryDocument() {
+    if (!app.documents) return null;
+    for (var index = 0; index < app.documents.length; index++) {
+      var documentRef = app.documents[index];
+      if (
+        String(documentRef.name || "") === settings.temporaryDocumentName
+      ) {
+        return documentRef;
+      }
+    }
+    return null;
+  }
+
+  function findSourceDocument(temporaryDocument) {
+    if (!app.documents) return null;
+
+    for (var index = 0; index < app.documents.length; index++) {
+      var documentRef = app.documents[index];
+      if (documentRef === temporaryDocument) continue;
+      if (
+        settings.sourceDocumentSource &&
+        documentSource(documentRef) === settings.sourceDocumentSource
+      ) {
+        return documentRef;
+      }
+    }
+
+    for (var fallbackIndex = 0; fallbackIndex < app.documents.length; fallbackIndex++) {
+      var fallbackDocument = app.documents[fallbackIndex];
+      if (
+        fallbackDocument !== temporaryDocument &&
+        String(fallbackDocument.name || "") === settings.sourceDocumentName
+      ) {
+        return fallbackDocument;
+      }
+    }
+
+    return null;
+  }
+
+  try {
+    var temporaryDocument = findTemporaryDocument();
+    var sourceDocument = findSourceDocument(temporaryDocument);
+
+    if (!temporaryDocument) {
+      throw new Error("Photopea could not find the temporary export document.");
+    }
+
+    app.activeDocument = temporaryDocument;
+    temporaryDocument.close(SaveOptions.DONOTSAVECHANGES);
+
+    var temporaryDocumentClosed = !findTemporaryDocument();
     if (!temporaryDocumentClosed) {
       throw new Error("Photopea left the temporary export document open.");
     }
 
-    sourceDocumentRestored = restoreSourceDocument();
+    if (!sourceDocument) {
+      throw new Error("Photopea could not find the original workfile.");
+    }
+
+    app.activeDocument = sourceDocument;
+    var sourceDocumentRestored = app.activeDocument === sourceDocument;
     if (!sourceDocumentRestored) {
       throw new Error("Photopea could not restore the original workfile.");
     }
 
-    sendResult({
+    app.echoToOE(resultTag + JSON.stringify({
       ok: true,
-      outputQueued: outputQueued,
-      temporaryDocumentClosed: temporaryDocumentClosed,
-      sourceDocumentRestored: sourceDocumentRestored
-    });
+      temporaryDocumentClosed: true,
+      sourceDocumentRestored: true
+    }));
   } catch (error) {
-    try {
-      temporaryDocumentClosed = closeTemporaryDocument();
-    } catch (closeError) {}
-
-    try {
-      sourceDocumentRestored = restoreSourceDocument();
-    } catch (activationError) {}
-
     var message = error && error.message ? error.message : String(error);
-    sendResult({
+    app.echoToOE(resultTag + JSON.stringify({
       ok: false,
       message: message,
-      outputQueued: outputQueued,
-      temporaryDocumentClosed: temporaryDocumentClosed,
-      sourceDocumentRestored: sourceDocumentRestored
-    });
-
-    app.echoToOE(errorTag + JSON.stringify({ message: message }));
+      temporaryDocumentClosed: !findTemporaryDocument(),
+      sourceDocumentRestored: false
+    }));
   }
 }());`;
 }
@@ -727,17 +821,22 @@ function runExport() {
     zipEntries: [],
     writes: [],
     filenames: [],
-    stage: "starting",
+    stage: "snapshotting",
     current: null,
     finalizing: false,
     timeoutId: null,
     token: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    snapshotBuffer: null,
+    snapshotDone: false,
   };
   state.phase = "export";
   state.statusKind = "working";
-  state.statusText = `Preparing 1 of ${items.length} selected layer(s)…`;
+  state.statusText = "Creating an independent temporary copy…";
   render();
-  startNextExportItem();
+  armExportTimeout(
+    "Photopea could not create an independent PSD snapshot of the original workfile.",
+  );
+  window.parent.postMessage(makeSnapshotScript(), "*");
 }
 
 function clearExportTimeout(session = state.exportSession) {
@@ -788,20 +887,85 @@ function startNextExportItem() {
   session.current = {
     item,
     bufferReceived: false,
-    itemResult: null,
+    renderDone: false,
+    cleanupResult: null,
+    cleanupDone: false,
     temporaryDocumentName,
   };
-  session.stage = "exporting";
+  session.stage = "opening-temporary";
   state.statusText =
-    `Rendering ${session.index + 1} of ${session.expected}: “${item.filename}”…`;
+    `Opening temporary copy ${session.index + 1} of ${session.expected}…`;
   const statusText = document.querySelector(".status span");
   if (statusText) statusText.textContent = state.statusText;
 
   armExportTimeout(
-    `Photopea did not finish rendering “${item.filename}”. The original workfile was not targeted; close any __EXPORT_SELECTED_TEMP__ tab without saving.`,
+    `Photopea could not open the independent temporary copy for “${item.filename}”.`,
+  );
+  window.parent.postMessage(session.snapshotBuffer.slice(0), "*");
+}
+
+function prepareCurrentTemporaryDocument() {
+  const session = state.exportSession;
+  if (
+    !session ||
+    session.finalizing ||
+    state.phase !== "export" ||
+    session.stage !== "opening-temporary" ||
+    !session.current
+  ) {
+    return;
+  }
+
+  const current = session.current;
+  session.stage = "rendering";
+  state.statusText =
+    `Rendering ${session.index + 1} of ${session.expected}: “${current.item.filename}”…`;
+  const statusText = document.querySelector(".status span");
+  if (statusText) statusText.textContent = state.statusText;
+
+  armExportTimeout(
+    `Photopea did not finish rendering “${current.item.filename}”. Close any __EXPORT_SELECTED_TEMP__ tab without saving; the original workfile was never edited.`,
   );
   window.parent.postMessage(
-    makeExportItemScript(item, temporaryDocumentName),
+    makePrepareTemporaryScript(
+      current.item,
+      current.temporaryDocumentName,
+      state.documentName,
+      state.documentSource,
+    ),
+    "*",
+  );
+}
+
+function maybeCloseCurrentTemporaryDocument() {
+  const session = state.exportSession;
+  if (
+    !session ||
+    session.finalizing ||
+    state.phase !== "export" ||
+    session.stage !== "rendering" ||
+    !session.current?.bufferReceived ||
+    !session.current?.renderDone
+  ) {
+    return;
+  }
+
+  const current = session.current;
+  session.stage = "closing-temporary";
+  state.statusText =
+    `Closing temporary copy ${session.index + 1} of ${session.expected}…`;
+  const statusText = document.querySelector(".status span");
+  if (statusText) statusText.textContent = state.statusText;
+
+  armExportTimeout(
+    `The exported file was received, but Photopea did not close its temporary copy. Close “${current.temporaryDocumentName}” without saving; the original workfile was never edited.`,
+  );
+  window.parent.postMessage(
+    makeCloseTemporaryScript(
+      current.temporaryDocumentName,
+      state.documentName,
+      state.documentSource,
+    ),
     "*",
   );
 }
@@ -812,18 +976,17 @@ function maybeCompleteExportItem() {
     !session ||
     session.finalizing ||
     state.phase !== "export" ||
-    session.stage !== "exporting" ||
-    !session.current?.bufferReceived ||
-    !session.current?.itemResult
+    session.stage !== "closing-temporary" ||
+    !session.current?.cleanupResult ||
+    !session.current?.cleanupDone
   ) {
     return;
   }
 
-  const result = session.current.itemResult;
+  const result = session.current.cleanupResult;
   if (!result.ok) {
     failExport(
-      result.message ||
-        "Photopea could not finish the temporary layer export.",
+      result.message || "Photopea could not close its temporary export document.",
     );
     return;
   }
@@ -854,23 +1017,31 @@ function handleExportItemResult(result) {
     !session ||
     session.finalizing ||
     state.phase !== "export" ||
-    session.stage !== "exporting"
+    session.stage !== "closing-temporary" ||
+    !session.current
   ) {
     return;
   }
 
-  session.current.itemResult = result;
-  if (!result.ok) {
-    failExport(
-      result.message || "Photopea could not finish the temporary layer export.",
-    );
+  session.current.cleanupResult = result;
+  maybeCompleteExportItem();
+}
+
+function maybeStartExternalTemporaryDocuments() {
+  const session = state.exportSession;
+  if (
+    !session ||
+    session.finalizing ||
+    state.phase !== "export" ||
+    session.stage !== "snapshotting" ||
+    !session.snapshotBuffer ||
+    !session.snapshotDone
+  ) {
     return;
   }
-  state.statusText =
-    `Receiving ${session.index + 1} of ${session.expected}: “${session.current.item.filename}”…`;
-  const statusText = document.querySelector(".status span");
-  if (statusText) statusText.textContent = state.statusText;
-  maybeCompleteExportItem();
+
+  clearExportTimeout(session);
+  startNextExportItem();
 }
 
 function handlePhotopeaDone() {
@@ -888,9 +1059,27 @@ function handlePhotopeaDone() {
   const session = state.exportSession;
   if (!session || session.finalizing || state.phase !== "export") return;
 
-  // Export completion is tracked with an explicit item result plus the
-  // ArrayBuffer. Photopea's generic "done" message is intentionally ignored
-  // here because complex documents can deliver it independently of encoding.
+  if (session.stage === "snapshotting") {
+    session.snapshotDone = true;
+    maybeStartExternalTemporaryDocuments();
+    return;
+  }
+
+  if (session.stage === "opening-temporary") {
+    prepareCurrentTemporaryDocument();
+    return;
+  }
+
+  if (session.stage === "rendering") {
+    session.current.renderDone = true;
+    maybeCloseCurrentTemporaryDocument();
+    return;
+  }
+
+  if (session.stage === "closing-temporary") {
+    session.current.cleanupDone = true;
+    maybeCompleteExportItem();
+  }
 }
 
 function openDatabase() {
@@ -1024,11 +1213,28 @@ function handleExportBuffer(buffer) {
   if (
     !session ||
     session.finalizing ||
-    state.phase !== "export" ||
-    session.stage !== "exporting"
+    state.phase !== "export"
   ) {
     return;
   }
+
+  if (session.stage === "snapshotting") {
+    if (session.snapshotBuffer) {
+      failExport("Photopea returned more than one PSD snapshot.");
+      return;
+    }
+
+    session.snapshotBuffer = buffer;
+    state.statusText = "Independent copy created. Preparing selected layers…";
+    const snapshotStatusText = document.querySelector(".status span");
+    if (snapshotStatusText) {
+      snapshotStatusText.textContent = state.statusText;
+    }
+    maybeStartExternalTemporaryDocuments();
+    return;
+  }
+
+  if (session.stage !== "rendering") return;
 
   const current = session.current;
   if (!current?.item) {
@@ -1064,7 +1270,7 @@ function handleExportBuffer(buffer) {
     `Saving ${session.index + 1} of ${session.expected}: “${item.filename}”…`;
   const statusText = document.querySelector(".status span");
   if (statusText) statusText.textContent = state.statusText;
-  maybeCompleteExportItem();
+  maybeCloseCurrentTemporaryDocument();
 }
 
 function makeCrcTable() {
