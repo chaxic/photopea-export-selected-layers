@@ -42,15 +42,18 @@ Run the included smoke checks with:
 npm test
 ```
 
-The plugin uses Photopea's Live Messaging API. It duplicates the active
-document temporarily, isolates one selected layer or group, rasterizes the
-throwaway copy to bake live Smart Filters, and calls `saveToOE()` once. The
-same Photopea script then closes that exact temporary document without saving
-and restores the original workfile. The plugin advances after receiving both
-the exported `ArrayBuffer` and explicit restoration confirmation; it does not
-depend on the generic `done` message.
+The plugin uses Photopea's Live Messaging API to request one full PSD snapshot
+of the active workfile. That `ArrayBuffer` stays locally in the plugin panel.
+For each selected layer, the panel sends a fresh copy of the snapshot back to
+Photopea, where it opens as a completely independent temporary document.
 
-Photopea's `Document.duplicate()` activates the duplicate but does not return
-it, so the plugin reads the new temporary document from `app.activeDocument`.
-Each duplicate receives a unique private document name. The source workfile is
-never hidden, trimmed, rasterized, or closed.
+The plugin isolates the requested layer, bakes live Smart Filters in the
+temporary document, exports the rendered image, and waits until Photopea has
+returned both the file and its completion message. Only then does a separate
+cleanup command close the uniquely named temporary document without saving and
+restore the original workfile.
+
+This approach uses more temporary memory than `Document.duplicate()`, but it
+does not run visibility changes, trimming, rasterization, saving, or closing
+against the original document. The source workfile and its History remain
+untouched.
