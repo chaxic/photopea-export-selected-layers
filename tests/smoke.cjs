@@ -65,6 +65,8 @@ globalThis.__test = {
   asArrayBuffer,
   handleExportBuffer,
   handlePhotopeaDone,
+  handleCleanupResult,
+  maybeCompleteCleanup,
   state
 };`,
   context,
@@ -76,7 +78,7 @@ assert.equal(helpers.sanitizeBaseName("Car:Red.png"), "Car_Red");
 assert.equal(helpers.sanitizeBaseName("CON"), "_CON");
 assert.equal(helpers.sanitizeBaseName("  Tree   Oak  "), "Tree Oak");
 assert.match(root.innerHTML, /Export Selected Layers/);
-assert.match(root.innerHTML, /v1\.0\.8/);
+assert.match(root.innerHTML, /v1\.0\.9/);
 assert.doesNotMatch(
   source,
   /state\.folderHandle\.requestPermission|handle\.requestPermission/,
@@ -84,7 +86,7 @@ assert.doesNotMatch(
 assert.match(source, /openFolderPicker\("restore"\)/);
 assert.equal(
   helpers.versionedPluginUrl(),
-  "https://example.com/photopea-export-selected-layers/?v=1.0.8",
+  "https://example.com/photopea-export-selected-layers/?v=1.0.9",
 );
 
 const inspectScript = helpers.makeInspectScript(17);
@@ -133,13 +135,13 @@ assert.doesNotMatch(
   ),
   /temporaryDocument = sourceDocument\.duplicate\(\)/,
 );
-assert.doesNotMatch(
+assert.match(
   helpers.makeCleanupScript(
     "__EXPORT_SELECTED_TEMP__test-0",
     "Workfile.psd",
     "local,0,Workfile.psd",
   ),
-  /app\.activeDocument\.close/,
+  /app\.activeDocument = temporaryDocument;[\s\S]*settings\.temporaryDocumentName[\s\S]*app\.activeDocument\.close\(SaveOptions\.DONOTSAVECHANGES\)/,
 );
 
 helpers.state.destination = "zip";
@@ -164,6 +166,7 @@ helpers.state.exportSession = {
     temporaryDocumentName: "__EXPORT_SELECTED_TEMP__test-0",
   },
   cleanupResult: null,
+  cleanupDoneReceived: false,
   finalizing: false,
   timeoutId: null,
 };
@@ -179,8 +182,16 @@ helpers.handlePhotopeaDone();
 assert.equal(helpers.state.exportSession.stage, "cleanup");
 assert.equal(fakeWindow.postedMessages.length, 1);
 assert.match(fakeWindow.postedMessages[0], /EXPORT_SELECTED_CLEANUP/);
-helpers.state.exportSession.cleanupResult = { ok: true };
+
+// The standard "done" message can arrive before echoToOE() cleanup metadata.
 helpers.handlePhotopeaDone();
+assert.equal(helpers.state.exportSession.stage, "cleanup");
+assert.equal(helpers.state.exportSession.finalizing, false);
+helpers.handleCleanupResult({
+  ok: true,
+  temporaryDocumentClosed: true,
+  sourceDocumentRestored: true,
+});
 assert.equal(helpers.state.exportSession.received, 1);
 assert.equal(helpers.state.exportSession.index, 1);
 assert.equal(helpers.state.exportSession.stage, "exporting");
@@ -193,6 +204,16 @@ helpers.handleExportBuffer(new Uint8Array([4, 5, 6]).buffer);
 assert.equal(helpers.state.exportSession.stage, "cleanup");
 assert.equal(fakeWindow.postedMessages.length, 3);
 assert.match(fakeWindow.postedMessages[2], /EXPORT_SELECTED_CLEANUP/);
+
+// Cleanup metadata can also arrive before the standard "done" message.
+helpers.handleCleanupResult({
+  ok: true,
+  temporaryDocumentClosed: true,
+  sourceDocumentRestored: true,
+});
+assert.equal(helpers.state.exportSession.stage, "cleanup");
+helpers.handlePhotopeaDone();
+assert.equal(helpers.state.exportSession.received, 2);
 
 function cloneLayer(layer) {
   return {
@@ -297,6 +318,8 @@ assert.equal(temporaryClosed, true);
 assert.equal(photopeaContext.app.activeDocument, sourceDocument);
 assert.equal(photopeaContext.app.documents.length, 1);
 assert.match(echoedMessages.at(-1), /"temporaryDocumentFound":true/);
+assert.match(echoedMessages.at(-1), /"temporaryDocumentClosed":true/);
+assert.match(echoedMessages.at(-1), /"sourceDocumentRestored":true/);
 
 (async () => {
   const zip = helpers.createStoredZip([
