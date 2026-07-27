@@ -170,6 +170,18 @@ select:focus-visible {
   font-size: 11px;
 }
 
+.panel-header .compatibility-text {
+  margin-top: 3px;
+  color: #7f9fc8;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.compatibility-text span {
+  margin: 0 2px;
+  color: #596d86;
+}
+
 .destination-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -606,6 +618,17 @@ select:focus-visible {
   box-shadow: 0 0 16px #6aa9ff;
 }
 
+.eyebrow-version {
+  padding: 4px 7px;
+  border: 1px solid rgb(139 188 255 / 30%);
+  border-radius: 999px;
+  background: rgb(106 169 255 / 9%);
+  color: #c9e0ff;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
 .install-copy > h1 {
   max-width: 620px;
   margin: 0;
@@ -622,6 +645,47 @@ select:focus-visible {
   color: #aab4c2;
   font-size: 17px;
   line-height: 1.65;
+}
+
+.release-meta {
+  display: grid;
+  max-width: 560px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: 24px 0;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 9px;
+  background: rgb(255 255 255 / 10%);
+}
+
+.release-meta > div {
+  min-width: 0;
+  padding: 12px 14px;
+  background: rgb(18 24 34 / 92%);
+}
+
+.release-meta span,
+.release-meta strong {
+  display: block;
+}
+
+.release-meta span {
+  margin-bottom: 4px;
+  color: #78869a;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.release-meta strong {
+  overflow: hidden;
+  color: #e8f1ff;
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .feature-pills {
