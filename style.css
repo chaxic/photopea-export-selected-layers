@@ -146,6 +146,24 @@ select:focus-visible {
   letter-spacing: -0.01em;
 }
 
+.panel-title-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.version-badge {
+  padding: 2px 5px;
+  border: 1px solid #46566a;
+  border-radius: 4px;
+  background: #222a34;
+  color: #8fb8ed;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .panel-header p {
   margin: 2px 0 0;
   color: var(--muted);
