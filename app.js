@@ -7,7 +7,7 @@ const READY_MESSAGE = "EXPORT_SELECTED_DIRECTORY_READY";
 const CANCEL_MESSAGE = "EXPORT_SELECTED_DIRECTORY_CANCELLED";
 const REPOSITORY_URL =
   "https://github.com/chaxic/photopea-export-selected-layers";
-const PLUGIN_VERSION = "1.0.7";
+const PLUGIN_VERSION = "1.0.8";
 const EXPORT_TIMEOUT_MS = 120000;
 
 const DB_NAME = "photopea-export-selected-layers";
@@ -136,11 +136,12 @@ function makeInspectScript(requestId = 0) {
 }());`;
 }
 
-function makeExportItemScript(item) {
+function makeExportItemScript(item, temporaryDocumentName) {
   const payload = JSON.stringify({
     item,
     trim: state.trim,
     format: formatSpec(),
+    temporaryDocumentName,
   });
 
   return `
@@ -189,6 +190,11 @@ function makeExportItemScript(item) {
       throw new Error("Photopea could not create a temporary export document.");
     }
 
+    // Give the duplicate a private identity. saveToOE() can change the active
+    // document before its asynchronous response reaches the plugin, so cleanup
+    // must never rely on whichever document happens to be active at that time.
+    temporaryDocument.name = settings.temporaryDocumentName;
+
     isolatePath(temporaryDocument.layers, settings.item.path, 0);
 
     if (settings.trim) {
@@ -227,15 +233,68 @@ function makeExportItemScript(item) {
 }());`;
 }
 
-function makeCleanupScript() {
+function makeCleanupScript(temporaryDocumentName, sourceDocumentName, sourceDocumentSource) {
+  const payload = JSON.stringify({
+    temporaryDocumentName,
+    sourceDocumentName,
+    sourceDocumentSource,
+  });
+
   return `
 (function () {
   var cleanupTag = ${JSON.stringify(CLEANUP_PREFIX)};
-  try {
-    if (app.documents && app.documents.length > 1) {
-      app.activeDocument.close(SaveOptions.DONOTSAVECHANGES);
+  var settings = ${payload};
+  var temporaryDocument = null;
+  var sourceDocument = null;
+
+  function safeSource(documentRef) {
+    try {
+      return String(documentRef.source || "");
+    } catch (error) {
+      return "";
     }
-    app.echoToOE(cleanupTag + JSON.stringify({ ok: true }));
+  }
+
+  try {
+    if (app.documents) {
+      for (var index = 0; index < app.documents.length; index++) {
+        var documentRef = app.documents[index];
+        var documentName = String(documentRef.name || "");
+
+        if (documentName === settings.temporaryDocumentName) {
+          temporaryDocument = documentRef;
+          continue;
+        }
+
+        if (
+          !sourceDocument &&
+          documentName === settings.sourceDocumentName &&
+          (
+            !settings.sourceDocumentSource ||
+            safeSource(documentRef) === settings.sourceDocumentSource
+          )
+        ) {
+          sourceDocument = documentRef;
+        }
+      }
+    }
+
+    // Close only the uniquely named duplicate. Photopea may have restored the
+    // workfile as active after saveToOE(), so closing app.activeDocument here
+    // would close the user's original file.
+    if (temporaryDocument) {
+      app.activeDocument = temporaryDocument;
+      temporaryDocument.close(SaveOptions.DONOTSAVECHANGES);
+    }
+
+    if (sourceDocument) {
+      app.activeDocument = sourceDocument;
+    }
+
+    app.echoToOE(cleanupTag + JSON.stringify({
+      ok: true,
+      temporaryDocumentFound: Boolean(temporaryDocument)
+    }));
   } catch (error) {
     app.echoToOE(cleanupTag + JSON.stringify({
       ok: false,
@@ -666,6 +725,7 @@ function runExport() {
     cleanupResult: null,
     finalizing: false,
     timeoutId: null,
+    token: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
   };
   state.phase = "export";
   state.statusKind = "working";
@@ -717,10 +777,13 @@ function startNextExportItem() {
   }
 
   const item = session.items[session.index];
+  const temporaryDocumentName =
+    `__EXPORT_SELECTED_TEMP__${session.token}-${session.index}`;
   session.current = {
     item,
     bufferReceived: false,
     doneReceived: false,
+    temporaryDocumentName,
   };
   session.cleanupResult = null;
   session.stage = "exporting";
@@ -728,7 +791,10 @@ function startNextExportItem() {
   armExportTimeout(
     `Photopea did not finish exporting “${item.filename}”. Try again with ZIP download, or disable trimming for this layer.`,
   );
-  window.parent.postMessage(makeExportItemScript(item), "*");
+  window.parent.postMessage(
+    makeExportItemScript(item, temporaryDocumentName),
+    "*",
+  );
 }
 
 function maybeBeginCleanup() {
@@ -749,7 +815,14 @@ function maybeBeginCleanup() {
   armExportTimeout(
     "Photopea exported the file but did not finish closing its temporary document.",
   );
-  window.parent.postMessage(makeCleanupScript(), "*");
+  window.parent.postMessage(
+    makeCleanupScript(
+      session.current.temporaryDocumentName,
+      state.documentName,
+      state.documentSource,
+    ),
+    "*",
+  );
 }
 
 function handlePhotopeaDone() {
