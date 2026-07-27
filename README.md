@@ -48,4 +48,6 @@ document temporarily, isolates one selected layer or group, and calls
 `done` messages, the plugin closes the temporary document and advances to the
 next layer. Photopea's `Document.duplicate()` activates the duplicate but does
 not return it, so the plugin reads the new temporary document from
-`app.activeDocument`. The workfile remains unchanged.
+`app.activeDocument`. Each duplicate receives a unique private document name,
+allowing cleanup to close that exact copy even if Photopea changes the active
+document during export. The workfile remains open and unchanged.
