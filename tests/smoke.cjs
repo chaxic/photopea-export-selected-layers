@@ -76,7 +76,7 @@ assert.equal(helpers.sanitizeBaseName("Car:Red.png"), "Car_Red");
 assert.equal(helpers.sanitizeBaseName("CON"), "_CON");
 assert.equal(helpers.sanitizeBaseName("  Tree   Oak  "), "Tree Oak");
 assert.match(root.innerHTML, /Export Selected Layers/);
-assert.match(root.innerHTML, /v1\.0\.6/);
+assert.match(root.innerHTML, /v1\.0\.7/);
 assert.doesNotMatch(
   source,
   /state\.folderHandle\.requestPermission|handle\.requestPermission/,
@@ -84,7 +84,7 @@ assert.doesNotMatch(
 assert.match(source, /openFolderPicker\("restore"\)/);
 assert.equal(
   helpers.versionedPluginUrl(),
-  "https://example.com/photopea-export-selected-layers/?v=1.0.6",
+  "https://example.com/photopea-export-selected-layers/?v=1.0.7",
 );
 
 const inspectScript = helpers.makeInspectScript(17);
@@ -103,6 +103,14 @@ assert.doesNotThrow(() => new vm.Script(helpers.makeCleanupScript()));
 assert.doesNotMatch(
   helpers.makeExportItemScript({ path: [0], filename: "Car Red.png" }),
   /saveToOE\(settings\.format\);\s*temporaryDocument\.close/,
+);
+assert.match(
+  helpers.makeExportItemScript({ path: [0], filename: "Car Red.png" }),
+  /sourceDocument\.duplicate\(\);\s*temporaryDocument = app\.activeDocument/,
+);
+assert.doesNotMatch(
+  helpers.makeExportItemScript({ path: [0], filename: "Car Red.png" }),
+  /temporaryDocument = sourceDocument\.duplicate\(\)/,
 );
 
 helpers.state.destination = "zip";
@@ -189,7 +197,7 @@ const sourceDocument = {
       },
       close() {},
     };
-    return duplicate;
+    photopeaContext.app.activeDocument = duplicate;
   },
 };
 const photopeaContext = {
