@@ -59,7 +59,9 @@ globalThis.__test = {
   sanitizeBaseName,
   createStoredZip,
   makeInspectScript,
-  makeExportItemScript,
+  makeSnapshotScript,
+  makePrepareTemporaryScript,
+  makeCloseTemporaryScript,
   versionedPluginUrl,
   asArrayBuffer,
   handleExportBuffer,
@@ -77,7 +79,7 @@ assert.equal(helpers.sanitizeBaseName("Car:Red.png"), "Car_Red");
 assert.equal(helpers.sanitizeBaseName("CON"), "_CON");
 assert.equal(helpers.sanitizeBaseName("  Tree   Oak  "), "Tree Oak");
 assert.match(root.innerHTML, /Export Selected Layers/);
-assert.match(root.innerHTML, /v1\.0\.10/);
+assert.match(root.innerHTML, /v1\.0\.11/);
 assert.doesNotMatch(
   source,
   /state\.folderHandle\.requestPermission|handle\.requestPermission/,
@@ -85,50 +87,59 @@ assert.doesNotMatch(
 assert.match(source, /openFolderPicker\("restore"\)/);
 assert.equal(
   helpers.versionedPluginUrl(),
-  "https://example.com/photopea-export-selected-layers/?v=1.0.10",
+  "https://example.com/photopea-export-selected-layers/?v=1.0.11",
 );
 
 const inspectScript = helpers.makeInspectScript(17);
 assert.doesNotThrow(() => new vm.Script(inspectScript));
 assert.match(inspectScript, /var requestId = 17/);
-assert.doesNotThrow(
-  () =>
-    new vm.Script(
-      helpers.makeExportItemScript(
-        {
-          path: [0, 1],
-          filename: "Tree Oak.png",
-        },
-        "__EXPORT_SELECTED_TEMP__test-0",
-      ),
-    ),
-);
-assert.match(
-  helpers.makeExportItemScript(
-    { path: [0], filename: "Car Red.png" },
-    "__EXPORT_SELECTED_TEMP__test-0",
-  ),
-  /sourceDocument\.duplicate\(\);\s*temporaryDocument = app\.activeDocument/,
-);
-assert.match(
-  helpers.makeExportItemScript(
-    { path: [0], filename: "Car Red.png" },
-    "__EXPORT_SELECTED_TEMP__test-0",
-  ),
-  /rasterizeAllLayers[\s\S]*mergeVisibleLayers[\s\S]*saveToOE\(settings\.format\)[\s\S]*closeTemporaryDocument\(\)[\s\S]*restoreSourceDocument\(\)[\s\S]*sendResult\(\{\s*ok: true/,
-);
-assert.doesNotMatch(
-  helpers.makeExportItemScript(
-    { path: [0], filename: "Car Red.png" },
-    "__EXPORT_SELECTED_TEMP__test-0",
-  ),
-  /temporaryDocument = sourceDocument\.duplicate\(\)/,
-);
-assert.doesNotMatch(source, /EXPORT_SELECTED_CLEANUP|makeCleanupScript/);
 
+const snapshotScript = helpers.makeSnapshotScript();
+assert.doesNotThrow(() => new vm.Script(snapshotScript));
+assert.match(snapshotScript, /app\.activeDocument\.saveToOE\("psd"\)/);
+assert.doesNotMatch(snapshotScript, /\.duplicate\(|\.trim\(|\.close\(/);
+
+const prepareScript = helpers.makePrepareTemporaryScript(
+  { path: [0, 1], filename: "Tree Oak.png" },
+  "__EXPORT_SELECTED_TEMP__test-0",
+  "Workfile.psd",
+  "local,0,Workfile.psd",
+);
+assert.doesNotThrow(() => new vm.Script(prepareScript));
+assert.match(
+  prepareScript,
+  /temporaryDocument = app\.activeDocument[\s\S]*temporaryDocument\.name = settings\.temporaryDocumentName/,
+);
+assert.match(
+  prepareScript,
+  /rasterizeAllLayers[\s\S]*mergeVisibleLayers[\s\S]*saveToOE\(settings\.format\)/,
+);
+assert.doesNotMatch(prepareScript, /\.duplicate\(/);
+assert.doesNotMatch(
+  prepareScript.slice(0, prepareScript.indexOf("} catch (error)")),
+  /\.close\(/,
+);
+
+const closeScript = helpers.makeCloseTemporaryScript(
+  "__EXPORT_SELECTED_TEMP__test-0",
+  "Workfile.psd",
+  "local,0,Workfile.psd",
+);
+assert.doesNotThrow(() => new vm.Script(closeScript));
+assert.match(
+  closeScript,
+  /app\.activeDocument = temporaryDocument[\s\S]*temporaryDocument\.close\(SaveOptions\.DONOTSAVECHANGES\)[\s\S]*app\.activeDocument = sourceDocument/,
+);
+assert.doesNotMatch(source, /sourceDocument\.duplicate\(/);
+
+// Drive the documented Photopea message lifecycle:
+// PSD snapshot buffer -> done -> open buffer -> done -> image buffer -> done
+// -> close confirmation / done.
 helpers.state.destination = "zip";
 helpers.state.phase = "export";
 helpers.state.embedded = true;
+helpers.state.documentName = "Workfile.psd";
+helpers.state.documentSource = "local,0,Workfile.psd";
 helpers.state.exportSession = {
   expected: 2,
   received: 0,
@@ -140,16 +151,35 @@ helpers.state.exportSession = {
   zipEntries: [],
   writes: [],
   filenames: [],
-  stage: "exporting",
-  current: {
-    item: { path: [0], filename: "Car Red.png" },
-    bufferReceived: false,
-    itemResult: null,
-    temporaryDocumentName: "__EXPORT_SELECTED_TEMP__test-0",
-  },
+  stage: "snapshotting",
+  current: null,
   finalizing: false,
   timeoutId: null,
+  token: "test",
+  snapshotBuffer: null,
+  snapshotDone: false,
 };
+
+const psdBuffer = new Uint8Array([8, 66, 80, 83]).buffer;
+helpers.handleExportBuffer(psdBuffer);
+assert.equal(helpers.state.exportSession.snapshotBuffer, psdBuffer);
+assert.equal(fakeWindow.postedMessages.length, 0);
+
+helpers.handlePhotopeaDone();
+assert.equal(helpers.state.exportSession.stage, "opening-temporary");
+assert.equal(fakeWindow.postedMessages.length, 1);
+assert.ok(fakeWindow.postedMessages[0] instanceof ArrayBuffer);
+assert.deepEqual(
+  Array.from(new Uint8Array(fakeWindow.postedMessages[0])),
+  [8, 66, 80, 83],
+);
+
+helpers.handlePhotopeaDone();
+assert.equal(helpers.state.exportSession.stage, "rendering");
+assert.equal(fakeWindow.postedMessages.length, 2);
+assert.match(fakeWindow.postedMessages[1], /Car Red\.png/);
+assert.match(fakeWindow.postedMessages[1], /saveToOE\(settings\.format\)/);
+
 helpers.handleExportBuffer(new Uint8Array([1, 2, 3]).buffer);
 assert.equal(helpers.state.exportSession.received, 0);
 assert.equal(helpers.state.exportSession.zipEntries[0].name, "Car Red.png");
@@ -157,33 +187,47 @@ assert.deepEqual(
   Array.from(helpers.state.exportSession.zipEntries[0].data),
   [1, 2, 3],
 );
-assert.equal(helpers.state.exportSession.stage, "exporting");
+assert.equal(helpers.state.exportSession.stage, "rendering");
+
 helpers.handlePhotopeaDone();
-assert.equal(helpers.state.exportSession.stage, "exporting");
-assert.equal(helpers.state.exportSession.finalizing, false);
+assert.equal(helpers.state.exportSession.stage, "closing-temporary");
+assert.equal(fakeWindow.postedMessages.length, 3);
+assert.match(fakeWindow.postedMessages[2], /temporaryDocument\.close/);
+
+// Cleanup metadata may arrive before Photopea's generic done message.
 helpers.handleExportItemResult({
   ok: true,
   temporaryDocumentClosed: true,
   sourceDocumentRestored: true,
 });
+assert.equal(helpers.state.exportSession.received, 0);
+helpers.handlePhotopeaDone();
 assert.equal(helpers.state.exportSession.received, 1);
 assert.equal(helpers.state.exportSession.index, 1);
-assert.equal(helpers.state.exportSession.stage, "exporting");
-assert.equal(fakeWindow.postedMessages.length, 1);
-assert.match(fakeWindow.postedMessages[0], /Car Blue\.png/);
-helpers.handlePhotopeaDone();
-assert.equal(helpers.state.exportSession.stage, "exporting");
+assert.equal(helpers.state.exportSession.stage, "opening-temporary");
+assert.equal(fakeWindow.postedMessages.length, 4);
+assert.ok(fakeWindow.postedMessages[3] instanceof ArrayBuffer);
 
-// Explicit completion metadata can arrive before the binary file.
+helpers.handlePhotopeaDone();
+assert.equal(helpers.state.exportSession.stage, "rendering");
+assert.match(fakeWindow.postedMessages[4], /Car Blue\.png/);
+
+// The documented done message can be observed before the panel receives the
+// image buffer; cleanup still starts only after both have arrived.
+helpers.handlePhotopeaDone();
+assert.equal(helpers.state.exportSession.stage, "rendering");
+helpers.handleExportBuffer(new Uint8Array([4, 5, 6]).buffer);
+assert.equal(helpers.state.exportSession.stage, "closing-temporary");
+assert.match(fakeWindow.postedMessages[5], /temporaryDocument\.close/);
+
+// The cleanup done message can also precede explicit cleanup metadata.
+helpers.handlePhotopeaDone();
+assert.equal(helpers.state.exportSession.received, 1);
 helpers.handleExportItemResult({
   ok: true,
   temporaryDocumentClosed: true,
   sourceDocumentRestored: true,
 });
-assert.equal(helpers.state.exportSession.stage, "exporting");
-helpers.handlePhotopeaDone();
-assert.equal(helpers.state.exportSession.received, 1);
-helpers.handleExportBuffer(new Uint8Array([4, 5, 6]).buffer);
 assert.equal(helpers.state.exportSession.received, 2);
 
 function cloneLayer(layer) {
@@ -206,45 +250,42 @@ const sourceLayers = [
   },
   { name: "Overlay", visible: true, layers: [] },
 ];
-const exportedVisibility = [];
-const echoedMessages = [];
-let sourceClosed = false;
-let temporaryClosed = false;
-let lastTemporaryDocument = null;
-const sourceDocument = {
+const originalDocument = {
   layers: sourceLayers.map(cloneLayer),
   name: "Workfile.psd",
   source: "local,0,Workfile.psd",
-  duplicate() {
-    const duplicate = {
-      name: "Workfile.psd",
-      source: "local,0,Workfile.psd",
-      layers: this.layers.map(cloneLayer),
-      trim() {},
-      rasterizeAllLayers() {
-        this.rasterized = true;
-      },
-      mergeVisibleLayers() {
-        this.merged = true;
-      },
-      saveToOE() {
-        exportedVisibility.push(this.layers.map(cloneLayer));
-      },
-      close() {
-        temporaryClosed = true;
-        const index = photopeaContext.app.documents.indexOf(duplicate);
-        photopeaContext.app.documents.splice(index, 1);
-      },
-    };
-    lastTemporaryDocument = duplicate;
-    photopeaContext.app.documents.push(duplicate);
-    photopeaContext.app.activeDocument = duplicate;
+  saveToOE(format) {
+    this.snapshotFormat = format;
   },
 };
+const temporaryDocument = {
+  layers: sourceLayers.map(cloneLayer),
+  name: "Workfile.psd",
+  source: "local,1,Workfile.psd",
+  trim() {
+    this.trimmed = true;
+  },
+  rasterizeAllLayers() {
+    this.rasterized = true;
+  },
+  mergeVisibleLayers() {
+    this.merged = true;
+  },
+  saveToOE(format) {
+    this.exportFormat = format;
+    this.exportedVisibility = this.layers.map(cloneLayer);
+  },
+  close() {
+    this.closed = true;
+    const index = photopeaContext.app.documents.indexOf(this);
+    photopeaContext.app.documents.splice(index, 1);
+  },
+};
+const echoedMessages = [];
 const photopeaContext = {
   app: {
-    documents: [sourceDocument],
-    activeDocument: sourceDocument,
+    documents: [originalDocument, temporaryDocument],
+    activeDocument: temporaryDocument,
     echoToOE(message) {
       echoedMessages.push(message);
     },
@@ -255,38 +296,63 @@ const photopeaContext = {
   Error,
 };
 vm.createContext(photopeaContext);
+
+const snapshotContext = {
+  app: {
+    documents: [originalDocument],
+    activeDocument: originalDocument,
+    echoToOE() {},
+  },
+  JSON,
+  Error,
+};
+vm.createContext(snapshotContext);
+vm.runInContext(snapshotScript, snapshotContext);
+assert.equal(originalDocument.snapshotFormat, "psd");
+
 vm.runInContext(
-  helpers.makeExportItemScript({
-    path: [1, 1],
-    filename: "Car Blue.png",
-  }, "__EXPORT_SELECTED_TEMP__test-0"),
+  helpers.makePrepareTemporaryScript(
+    { path: [1, 1], filename: "Car Blue.png" },
+    "__EXPORT_SELECTED_TEMP__test-0",
+    "Workfile.psd",
+    "local,0,Workfile.psd",
+  ),
   photopeaContext,
 );
 
-assert.equal(exportedVisibility.length, 1);
-assert.equal(lastTemporaryDocument.rasterized, true);
-assert.equal(lastTemporaryDocument.merged, true);
-assert.equal(exportedVisibility[0][0].visible, false);
-assert.equal(exportedVisibility[0][1].visible, true);
-assert.equal(exportedVisibility[0][1].layers[0].visible, false);
-assert.equal(exportedVisibility[0][1].layers[1].visible, true);
-assert.equal(exportedVisibility[0][2].visible, false);
+assert.equal(temporaryDocument.name, "__EXPORT_SELECTED_TEMP__test-0");
+assert.equal(temporaryDocument.rasterized, true);
+assert.equal(temporaryDocument.merged, true);
+assert.equal(temporaryDocument.trimmed, true);
+assert.equal(temporaryDocument.exportFormat, "png");
+assert.equal(temporaryDocument.closed, undefined);
+assert.equal(temporaryDocument.exportedVisibility[0].visible, false);
+assert.equal(temporaryDocument.exportedVisibility[1].visible, true);
+assert.equal(temporaryDocument.exportedVisibility[1].layers[0].visible, false);
+assert.equal(temporaryDocument.exportedVisibility[1].layers[1].visible, true);
+assert.equal(temporaryDocument.exportedVisibility[2].visible, false);
 assert.deepEqual(
-  sourceDocument.layers.map((layer) => layer.visible),
+  originalDocument.layers.map((layer) => layer.visible),
   [true, true, true],
 );
-sourceDocument.close = () => {
-  sourceClosed = true;
-};
-assert.equal(sourceClosed, false);
-assert.equal(temporaryClosed, true);
-assert.equal(photopeaContext.app.activeDocument, sourceDocument);
+assert.equal(photopeaContext.app.activeDocument, temporaryDocument);
+
+vm.runInContext(
+  helpers.makeCloseTemporaryScript(
+    "__EXPORT_SELECTED_TEMP__test-0",
+    "Workfile.psd",
+    "local,0,Workfile.psd",
+  ),
+  photopeaContext,
+);
+
+assert.equal(temporaryDocument.closed, true);
 assert.equal(photopeaContext.app.documents.length, 1);
+assert.equal(photopeaContext.app.activeDocument, originalDocument);
 assert.equal(echoedMessages.length, 1);
-assert.match(echoedMessages.at(-1), /EXPORT_SELECTED_ITEM_RESULT::/);
-assert.match(echoedMessages.at(-1), /"outputQueued":true/);
-assert.match(echoedMessages.at(-1), /"temporaryDocumentClosed":true/);
-assert.match(echoedMessages.at(-1), /"sourceDocumentRestored":true/);
+assert.match(echoedMessages[0], /EXPORT_SELECTED_ITEM_RESULT::/);
+assert.match(echoedMessages[0], /"temporaryDocumentClosed":true/);
+assert.match(echoedMessages[0], /"sourceDocumentRestored":true/);
 
 (async () => {
   const zip = helpers.createStoredZip([
