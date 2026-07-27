@@ -1,13 +1,14 @@
 "use strict";
 
 const META_PREFIX = "EXPORT_SELECTED_META::";
-const FINISH_PREFIX = "EXPORT_SELECTED_FINISH::";
+const EXPORT_ERROR_PREFIX = "EXPORT_SELECTED_ERROR::";
+const CLEANUP_PREFIX = "EXPORT_SELECTED_CLEANUP::";
 const READY_MESSAGE = "EXPORT_SELECTED_DIRECTORY_READY";
 const CANCEL_MESSAGE = "EXPORT_SELECTED_DIRECTORY_CANCELLED";
 const REPOSITORY_URL =
   "https://github.com/chaxic/photopea-export-selected-layers";
-const PLUGIN_VERSION = "1.0.5";
-const EXPORT_TIMEOUT_MS = 60000;
+const PLUGIN_VERSION = "1.0.6";
+const EXPORT_TIMEOUT_MS = 120000;
 
 const DB_NAME = "photopea-export-selected-layers";
 const DB_VERSION = 1;
@@ -135,23 +136,19 @@ function makeInspectScript(requestId = 0) {
 }());`;
 }
 
-function makeExportScript(items) {
+function makeExportItemScript(item) {
   const payload = JSON.stringify({
-    items,
+    item,
     trim: state.trim,
     format: formatSpec(),
   });
 
   return `
 (function () {
-  var finishTag = ${JSON.stringify(FINISH_PREFIX)};
+  var errorTag = ${JSON.stringify(EXPORT_ERROR_PREFIX)};
   var settings = ${payload};
   var sourceDocument = null;
   var temporaryDocument = null;
-
-  function sendFinish(result) {
-    app.echoToOE(finishTag + JSON.stringify(result));
-  }
 
   function isolatePath(layers, path, depth) {
     var targetIndex = path[depth];
@@ -175,40 +172,34 @@ function makeExportScript(items) {
 
   try {
     if (!app.documents || app.documents.length === 0) {
-      sendFinish({ ok: false, message: "Open a document before exporting layers." });
+      app.echoToOE(errorTag + JSON.stringify({
+        message: "Open a document before exporting layers."
+      }));
       return;
     }
 
     sourceDocument = app.activeDocument;
-    var exported = 0;
+    temporaryDocument = sourceDocument.duplicate();
+    app.activeDocument = temporaryDocument;
 
-    for (var itemIndex = 0; itemIndex < settings.items.length; itemIndex++) {
-      var item = settings.items[itemIndex];
-      temporaryDocument = sourceDocument.duplicate();
-      app.activeDocument = temporaryDocument;
+    isolatePath(temporaryDocument.layers, settings.item.path, 0);
 
-      isolatePath(temporaryDocument.layers, item.path, 0);
-
-      if (settings.trim) {
-        try {
-          temporaryDocument.trim(
-            TrimType.TRANSPARENT,
-            true,
-            true,
-            true,
-            true
-          );
-        } catch (trimError) {}
-      }
-
-      temporaryDocument.saveToOE(settings.format);
-      temporaryDocument.close(SaveOptions.DONOTSAVECHANGES);
-      temporaryDocument = null;
-      exported++;
-      app.activeDocument = sourceDocument;
+    if (settings.trim) {
+      try {
+        temporaryDocument.trim(
+          TrimType.TRANSPARENT,
+          true,
+          true,
+          true,
+          true
+        );
+      } catch (trimError) {}
     }
 
-    sendFinish({ ok: true, exported: exported });
+    // Photopea documents that saveToOE() sends one ArrayBuffer and then "done".
+    // Keep this temporary document open until the outer environment receives
+    // both messages. Closing it here can interrupt asynchronous encoding.
+    temporaryDocument.saveToOE(settings.format);
   } catch (error) {
     if (temporaryDocument) {
       try {
@@ -222,10 +213,27 @@ function makeExportScript(items) {
       } catch (activationError) {}
     }
 
-    sendFinish({
+    app.echoToOE(errorTag + JSON.stringify({
+      message: error && error.message ? error.message : String(error)
+    }));
+  }
+}());`;
+}
+
+function makeCleanupScript() {
+  return `
+(function () {
+  var cleanupTag = ${JSON.stringify(CLEANUP_PREFIX)};
+  try {
+    if (app.documents && app.documents.length > 1) {
+      app.activeDocument.close(SaveOptions.DONOTSAVECHANGES);
+    }
+    app.echoToOE(cleanupTag + JSON.stringify({ ok: true }));
+  } catch (error) {
+    app.echoToOE(cleanupTag + JSON.stringify({
       ok: false,
       message: error && error.message ? error.message : String(error)
-    });
+    }));
   }
 }());`;
 }
@@ -641,12 +649,14 @@ function runExport() {
   state.exportSession = {
     expected: items.length,
     received: 0,
+    index: 0,
     items,
     zipEntries: [],
     writes: [],
     filenames: [],
-    scriptFinished: false,
-    scriptResult: null,
+    stage: "starting",
+    current: null,
+    cleanupResult: null,
     finalizing: false,
     timeoutId: null,
   };
@@ -654,15 +664,132 @@ function runExport() {
   state.statusKind = "working";
   state.statusText = `Exporting 0 of ${items.length} selected layer(s)…`;
   render();
-  state.exportSession.timeoutId = setTimeout(() => {
-    if (state.exportSession?.finalizing || state.phase !== "export") return;
-    state.exportSession.finalizing = true;
-    setStatus(
-      "error",
-      "Photopea did not return the exported file. Reopen the panel and try again, or use ZIP download.",
-    );
+  startNextExportItem();
+}
+
+function clearExportTimeout(session = state.exportSession) {
+  if (!session?.timeoutId) return;
+  clearTimeout(session.timeoutId);
+  session.timeoutId = null;
+}
+
+function armExportTimeout(message) {
+  const session = state.exportSession;
+  if (!session) return;
+  clearExportTimeout(session);
+  session.timeoutId = setTimeout(() => {
+    if (
+      state.exportSession !== session ||
+      session.finalizing ||
+      state.phase !== "export"
+    ) {
+      return;
+    }
+    failExport(message);
   }, EXPORT_TIMEOUT_MS);
-  window.parent.postMessage(makeExportScript(items), "*");
+}
+
+function failExport(message) {
+  const session = state.exportSession;
+  if (session) {
+    clearExportTimeout(session);
+    session.finalizing = true;
+    session.stage = "failed";
+  }
+  setStatus("error", message || "Photopea could not export the layers.");
+}
+
+function startNextExportItem() {
+  const session = state.exportSession;
+  if (!session || session.finalizing || state.phase !== "export") return;
+
+  if (session.index >= session.expected) {
+    session.stage = "complete";
+    maybeFinalizeExport();
+    return;
+  }
+
+  const item = session.items[session.index];
+  session.current = {
+    item,
+    bufferReceived: false,
+    doneReceived: false,
+  };
+  session.cleanupResult = null;
+  session.stage = "exporting";
+
+  armExportTimeout(
+    `Photopea did not finish exporting “${item.filename}”. Try again with ZIP download, or disable trimming for this layer.`,
+  );
+  window.parent.postMessage(makeExportItemScript(item), "*");
+}
+
+function maybeBeginCleanup() {
+  const session = state.exportSession;
+  if (
+    !session ||
+    session.finalizing ||
+    session.stage !== "exporting" ||
+    !session.current?.bufferReceived ||
+    !session.current?.doneReceived
+  ) {
+    return;
+  }
+
+  clearExportTimeout(session);
+  session.stage = "cleanup";
+  session.cleanupResult = null;
+  armExportTimeout(
+    "Photopea exported the file but did not finish closing its temporary document.",
+  );
+  window.parent.postMessage(makeCleanupScript(), "*");
+}
+
+function handlePhotopeaDone() {
+  const inspection = state.activeInspection;
+  if (
+    state.phase === "inspect" &&
+    inspection?.metadataReceived &&
+    inspection.thenExport
+  ) {
+    state.activeInspection = null;
+    runExport();
+    return;
+  }
+
+  const session = state.exportSession;
+  if (!session || session.finalizing || state.phase !== "export") return;
+
+  if (session.stage === "exporting") {
+    session.current.doneReceived = true;
+    maybeBeginCleanup();
+    return;
+  }
+
+  if (session.stage !== "cleanup") return;
+
+  if (!session.cleanupResult) {
+    failExport(
+      "Photopea did not confirm that its temporary export document was closed.",
+    );
+    return;
+  }
+
+  if (!session.cleanupResult.ok) {
+    failExport(
+      session.cleanupResult.message ||
+        "Photopea could not close its temporary export document.",
+    );
+    return;
+  }
+
+  clearExportTimeout(session);
+  session.received++;
+  session.index++;
+  state.statusText = `Exporting ${session.received} of ${session.expected} selected layer(s)…`;
+  const statusText = document.querySelector(".status span");
+  if (statusText) statusText.textContent = state.statusText;
+  startNextExportItem();
 }
 
 function openDatabase() {
@@ -793,20 +920,28 @@ async function writeFileToDirectory(filename, buffer) {
 
 function handleExportBuffer(buffer) {
   const session = state.exportSession;
-  if (!session || state.phase !== "export") return;
-
-  const item = session.items[session.received];
-  if (!item) {
-    session.scriptFinished = true;
-    session.scriptResult = {
-      ok: false,
-      message: "Photopea returned more files than the plugin requested.",
-    };
-    maybeFinalizeExport();
+  if (
+    !session ||
+    session.finalizing ||
+    state.phase !== "export" ||
+    session.stage !== "exporting"
+  ) {
     return;
   }
 
-  session.received++;
+  const current = session.current;
+  if (!current?.item) {
+    failExport("Photopea returned a file when no layer export was active.");
+    return;
+  }
+
+  if (current.bufferReceived) {
+    failExport("Photopea returned more than one file for a selected layer.");
+    return;
+  }
+
+  current.bufferReceived = true;
+  const item = current.item;
 
   if (state.destination === "folder") {
     const write = writeFileToDirectory(item.filename, buffer).then(
@@ -824,10 +959,7 @@ function handleExportBuffer(buffer) {
     session.filenames.push(item.filename);
   }
 
-  state.statusText = `Exporting ${session.received} of ${session.expected} selected layer(s)…`;
-  const statusText = document.querySelector(".status span");
-  if (statusText) statusText.textContent = state.statusText;
-  maybeFinalizeExport();
+  maybeBeginCleanup();
 }
 
 function makeCrcTable() {
@@ -968,25 +1100,14 @@ async function maybeFinalizeExport() {
   if (
     !session ||
     session.finalizing ||
-    !session.scriptFinished ||
-    (session.scriptResult?.ok && session.received < session.expected)
+    session.stage !== "complete" ||
+    session.received < session.expected
   ) {
     return;
   }
 
   session.finalizing = true;
-  if (session.timeoutId) {
-    clearTimeout(session.timeoutId);
-    session.timeoutId = null;
-  }
-
-  if (!session.scriptResult?.ok) {
-    setStatus(
-      "error",
-      session.scriptResult?.message || "Photopea could not export the layers.",
-    );
-    return;
-  }
+  clearExportTimeout(session);
 
   try {
     const results = await Promise.allSettled(session.writes);
@@ -1137,6 +1258,11 @@ window.addEventListener("message", async (event) => {
 
   if (typeof event.data !== "string") return;
 
+  if (event.data === "done") {
+    handlePhotopeaDone();
+    return;
+  }
+
   if (event.data.startsWith(META_PREFIX)) {
     try {
       const envelope = JSON.parse(event.data.slice(META_PREFIX.length));
@@ -1152,9 +1278,9 @@ window.addEventListener("message", async (event) => {
       }
 
       const shouldExport = Boolean(activeInspection?.thenExport);
-      state.activeInspection = null;
 
       if (!result.ok) {
+        state.activeInspection = null;
         setStatus(
           "error",
           result.message || "Photopea could not read the selected layers.",
@@ -1167,13 +1293,18 @@ window.addEventListener("message", async (event) => {
       state.layers = result.layers || [];
 
       if (!state.layers.length) {
+        state.activeInspection = null;
         setStatus("error", "Select one or more layers or groups first.");
         return;
       }
 
       if (shouldExport) {
-        runExport();
+        activeInspection.metadataReceived = true;
+        state.statusKind = "working";
+        state.statusText = "Preparing the first selected layer…";
+        render();
       } else {
+        state.activeInspection = null;
         setStatus(
           "ok",
           `${state.layers.length} selected layer(s) ready to export.`,
@@ -1185,15 +1316,24 @@ window.addEventListener("message", async (event) => {
     return;
   }
 
-  if (event.data.startsWith(FINISH_PREFIX)) {
+  if (event.data.startsWith(EXPORT_ERROR_PREFIX)) {
     try {
-      const result = JSON.parse(event.data.slice(FINISH_PREFIX.length));
-      if (!state.exportSession) return;
-      state.exportSession.scriptFinished = true;
-      state.exportSession.scriptResult = result;
-      maybeFinalizeExport();
+      const result = JSON.parse(event.data.slice(EXPORT_ERROR_PREFIX.length));
+      failExport(result.message || "Photopea could not export the selected layer.");
     } catch {
-      setStatus("error", "Photopea returned an unreadable export result.");
+      failExport("Photopea returned an unreadable export error.");
+    }
+    return;
+  }
+
+  if (event.data.startsWith(CLEANUP_PREFIX)) {
+    try {
+      const result = JSON.parse(event.data.slice(CLEANUP_PREFIX.length));
+      const session = state.exportSession;
+      if (!session || session.stage !== "cleanup") return;
+      session.cleanupResult = result;
+    } catch {
+      failExport("Photopea returned an unreadable cleanup result.");
     }
   }
 });
