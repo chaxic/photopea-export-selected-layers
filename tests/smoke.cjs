@@ -25,6 +25,10 @@ const fakeWindow = {
   location: { origin: "https://example.com" },
   parent: null,
   addEventListener() {},
+  postedMessages: [],
+  postMessage(message) {
+    this.postedMessages.push(message);
+  },
   open() {
     return {};
   },
@@ -55,10 +59,12 @@ globalThis.__test = {
   sanitizeBaseName,
   createStoredZip,
   makeInspectScript,
-  makeExportScript,
+  makeExportItemScript,
+  makeCleanupScript,
   versionedPluginUrl,
   asArrayBuffer,
   handleExportBuffer,
+  handlePhotopeaDone,
   state
 };`,
   context,
@@ -70,7 +76,7 @@ assert.equal(helpers.sanitizeBaseName("Car:Red.png"), "Car_Red");
 assert.equal(helpers.sanitizeBaseName("CON"), "_CON");
 assert.equal(helpers.sanitizeBaseName("  Tree   Oak  "), "Tree Oak");
 assert.match(root.innerHTML, /Export Selected Layers/);
-assert.match(root.innerHTML, /v1\.0\.5/);
+assert.match(root.innerHTML, /v1\.0\.6/);
 assert.doesNotMatch(
   source,
   /state\.folderHandle\.requestPermission|handle\.requestPermission/,
@@ -78,7 +84,7 @@ assert.doesNotMatch(
 assert.match(source, /openFolderPicker\("restore"\)/);
 assert.equal(
   helpers.versionedPluginUrl(),
-  "https://example.com/photopea-export-selected-layers/?v=1.0.5",
+  "https://example.com/photopea-export-selected-layers/?v=1.0.6",
 );
 
 const inspectScript = helpers.makeInspectScript(17);
@@ -87,34 +93,68 @@ assert.match(inspectScript, /var requestId = 17/);
 assert.doesNotThrow(
   () =>
     new vm.Script(
-      helpers.makeExportScript([
-        { path: [0, 1], filename: "Tree Oak.png" },
-      ]),
+      helpers.makeExportItemScript({
+        path: [0, 1],
+        filename: "Tree Oak.png",
+      }),
     ),
 );
-assert.doesNotMatch(source, /EXPORT_SELECTED_ITEM/);
+assert.doesNotThrow(() => new vm.Script(helpers.makeCleanupScript()));
+assert.doesNotMatch(
+  helpers.makeExportItemScript({ path: [0], filename: "Car Red.png" }),
+  /saveToOE\(settings\.format\);\s*temporaryDocument\.close/,
+);
 
 helpers.state.destination = "zip";
 helpers.state.phase = "export";
+helpers.state.embedded = true;
 helpers.state.exportSession = {
-  expected: 1,
+  expected: 2,
   received: 0,
-  items: [{ path: [0], filename: "Car Red.png" }],
+  index: 0,
+  items: [
+    { path: [0], filename: "Car Red.png" },
+    { path: [1], filename: "Car Blue.png" },
+  ],
   zipEntries: [],
   writes: [],
   filenames: [],
-  scriptFinished: false,
-  scriptResult: null,
+  stage: "exporting",
+  current: {
+    item: { path: [0], filename: "Car Red.png" },
+    bufferReceived: false,
+    doneReceived: false,
+  },
+  cleanupResult: null,
   finalizing: false,
   timeoutId: null,
 };
 helpers.handleExportBuffer(new Uint8Array([1, 2, 3]).buffer);
-assert.equal(helpers.state.exportSession.received, 1);
+assert.equal(helpers.state.exportSession.received, 0);
 assert.equal(helpers.state.exportSession.zipEntries[0].name, "Car Red.png");
 assert.deepEqual(
   Array.from(helpers.state.exportSession.zipEntries[0].data),
   [1, 2, 3],
 );
+assert.equal(helpers.state.exportSession.stage, "exporting");
+helpers.handlePhotopeaDone();
+assert.equal(helpers.state.exportSession.stage, "cleanup");
+assert.equal(fakeWindow.postedMessages.length, 1);
+assert.match(fakeWindow.postedMessages[0], /EXPORT_SELECTED_CLEANUP/);
+helpers.state.exportSession.cleanupResult = { ok: true };
+helpers.handlePhotopeaDone();
+assert.equal(helpers.state.exportSession.received, 1);
+assert.equal(helpers.state.exportSession.index, 1);
+assert.equal(helpers.state.exportSession.stage, "exporting");
+assert.equal(fakeWindow.postedMessages.length, 2);
+assert.match(fakeWindow.postedMessages[1], /Car Blue\.png/);
+helpers.handlePhotopeaDone();
+assert.equal(helpers.state.exportSession.stage, "exporting");
+assert.equal(helpers.state.exportSession.current.doneReceived, true);
+helpers.handleExportBuffer(new Uint8Array([4, 5, 6]).buffer);
+assert.equal(helpers.state.exportSession.stage, "cleanup");
+assert.equal(fakeWindow.postedMessages.length, 3);
+assert.match(fakeWindow.postedMessages[2], /EXPORT_SELECTED_CLEANUP/);
 
 function cloneLayer(layer) {
   return {
@@ -167,9 +207,10 @@ const photopeaContext = {
 };
 vm.createContext(photopeaContext);
 vm.runInContext(
-  helpers.makeExportScript([
-    { path: [1, 1], filename: "Car Blue.png" },
-  ]),
+  helpers.makeExportItemScript({
+    path: [1, 1],
+    filename: "Car Blue.png",
+  }),
   photopeaContext,
 );
 
@@ -183,7 +224,7 @@ assert.deepEqual(
   sourceDocument.layers.map((layer) => layer.visible),
   [true, true, true],
 );
-assert.ok(echoedMessages.some((message) => message.startsWith("EXPORT_SELECTED_FINISH::")));
+assert.equal(echoedMessages.length, 0);
 
 (async () => {
   const zip = helpers.createStoredZip([
