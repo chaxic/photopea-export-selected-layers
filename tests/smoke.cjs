@@ -44,6 +44,7 @@ const context = {
   Promise,
   console,
   setTimeout() {},
+  clearTimeout() {},
   indexedDB: {},
 };
 
@@ -55,7 +56,10 @@ globalThis.__test = {
   createStoredZip,
   makeInspectScript,
   makeExportScript,
-  versionedPluginUrl
+  versionedPluginUrl,
+  asArrayBuffer,
+  handleExportBuffer,
+  state
 };`,
   context,
 );
@@ -73,10 +77,12 @@ assert.doesNotMatch(
 assert.match(source, /openFolderPicker\("restore"\)/);
 assert.equal(
   helpers.versionedPluginUrl(),
-  "https://example.com/photopea-export-selected-layers/?v=1.0.3",
+  "https://example.com/photopea-export-selected-layers/?v=1.0.4",
 );
 
-assert.doesNotThrow(() => new vm.Script(helpers.makeInspectScript()));
+const inspectScript = helpers.makeInspectScript(17);
+assert.doesNotThrow(() => new vm.Script(inspectScript));
+assert.match(inspectScript, /var requestId = 17/);
 assert.doesNotThrow(
   () =>
     new vm.Script(
@@ -84,6 +90,29 @@ assert.doesNotThrow(
         { path: [0, 1], filename: "Tree Oak.png" },
       ]),
     ),
+);
+assert.doesNotMatch(source, /EXPORT_SELECTED_ITEM/);
+
+helpers.state.destination = "zip";
+helpers.state.phase = "export";
+helpers.state.exportSession = {
+  expected: 1,
+  received: 0,
+  items: [{ path: [0], filename: "Car Red.png" }],
+  zipEntries: [],
+  writes: [],
+  filenames: [],
+  scriptFinished: false,
+  scriptResult: null,
+  finalizing: false,
+  timeoutId: null,
+};
+helpers.handleExportBuffer(new Uint8Array([1, 2, 3]).buffer);
+assert.equal(helpers.state.exportSession.received, 1);
+assert.equal(helpers.state.exportSession.zipEntries[0].name, "Car Red.png");
+assert.deepEqual(
+  Array.from(helpers.state.exportSession.zipEntries[0].data),
+  [1, 2, 3],
 );
 
 function cloneLayer(layer) {
@@ -153,7 +182,6 @@ assert.deepEqual(
   sourceDocument.layers.map((layer) => layer.visible),
   [true, true, true],
 );
-assert.ok(echoedMessages.some((message) => message.startsWith("EXPORT_SELECTED_ITEM::")));
 assert.ok(echoedMessages.some((message) => message.startsWith("EXPORT_SELECTED_FINISH::")));
 
 (async () => {
