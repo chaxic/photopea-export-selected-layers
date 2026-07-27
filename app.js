@@ -1,13 +1,13 @@
 "use strict";
 
 const META_PREFIX = "EXPORT_SELECTED_META::";
-const ITEM_PREFIX = "EXPORT_SELECTED_ITEM::";
 const FINISH_PREFIX = "EXPORT_SELECTED_FINISH::";
 const READY_MESSAGE = "EXPORT_SELECTED_DIRECTORY_READY";
 const CANCEL_MESSAGE = "EXPORT_SELECTED_DIRECTORY_CANCELLED";
 const REPOSITORY_URL =
   "https://github.com/chaxic/photopea-export-selected-layers";
-const PLUGIN_VERSION = "1.0.3";
+const PLUGIN_VERSION = "1.0.4";
+const EXPORT_TIMEOUT_MS = 60000;
 
 const DB_NAME = "photopea-export-selected-layers";
 const DB_VERSION = 1;
@@ -31,7 +31,8 @@ const state = {
   statusKind: "idle",
   statusText: "",
   exportAfterFolderChoice: false,
-  inspectThenExport: false,
+  inspectionSequence: 0,
+  activeInspection: null,
   pickerWindow: null,
   exportSession: null,
 };
@@ -72,13 +73,17 @@ function formatSpec() {
   return `${state.format}:${Math.max(1, Math.min(100, state.quality)) / 100}`;
 }
 
-function makeInspectScript() {
+function makeInspectScript(requestId = 0) {
   return `
 (function () {
   var resultTag = ${JSON.stringify(META_PREFIX)};
+  var requestId = ${JSON.stringify(requestId)};
 
   function sendResult(result) {
-    app.echoToOE(resultTag + JSON.stringify(result));
+    app.echoToOE(resultTag + JSON.stringify({
+      requestId: requestId,
+      result: result
+    }));
   }
 
   try {
@@ -139,7 +144,6 @@ function makeExportScript(items) {
 
   return `
 (function () {
-  var itemTag = ${JSON.stringify(ITEM_PREFIX)};
   var finishTag = ${JSON.stringify(FINISH_PREFIX)};
   var settings = ${payload};
   var sourceDocument = null;
@@ -181,6 +185,7 @@ function makeExportScript(items) {
     for (var itemIndex = 0; itemIndex < settings.items.length; itemIndex++) {
       var item = settings.items[itemIndex];
       temporaryDocument = sourceDocument.duplicate();
+      app.activeDocument = temporaryDocument;
 
       isolatePath(temporaryDocument.layers, item.path, 0);
 
@@ -196,10 +201,6 @@ function makeExportScript(items) {
         } catch (trimError) {}
       }
 
-      app.echoToOE(itemTag + JSON.stringify({
-        index: itemIndex,
-        filename: item.filename
-      }));
       temporaryDocument.saveToOE(settings.format);
       temporaryDocument.close(SaveOptions.DONOTSAVECHANGES);
       temporaryDocument = null;
@@ -554,14 +555,15 @@ function inspectSelection(thenExport = false) {
   }
 
   updateSettingsFromInputs();
-  state.inspectThenExport = thenExport;
+  const requestId = ++state.inspectionSequence;
+  state.activeInspection = { requestId, thenExport };
   state.phase = "inspect";
   state.statusKind = "working";
   state.statusText = thenExport
     ? "Checking the selected layers…"
     : "Reading the current selection…";
   render();
-  window.parent.postMessage(makeInspectScript(), "*");
+  window.parent.postMessage(makeInspectScript(requestId), "*");
 }
 
 function sanitizeBaseName(value) {
@@ -636,18 +638,27 @@ function runExport() {
   state.exportSession = {
     expected: items.length,
     received: 0,
-    metadataQueue: [],
+    items,
     zipEntries: [],
     writes: [],
     filenames: [],
     scriptFinished: false,
     scriptResult: null,
     finalizing: false,
+    timeoutId: null,
   };
   state.phase = "export";
   state.statusKind = "working";
   state.statusText = `Exporting 0 of ${items.length} selected layer(s)…`;
   render();
+  state.exportSession.timeoutId = setTimeout(() => {
+    if (state.exportSession?.finalizing || state.phase !== "export") return;
+    state.exportSession.finalizing = true;
+    setStatus(
+      "error",
+      "Photopea did not return the exported file. Reopen the panel and try again, or use ZIP download.",
+    );
+  }, EXPORT_TIMEOUT_MS);
   window.parent.postMessage(makeExportScript(items), "*");
 }
 
@@ -781,18 +792,21 @@ function handleExportBuffer(buffer) {
   const session = state.exportSession;
   if (!session || state.phase !== "export") return;
 
-  const metadata = session.metadataQueue.shift();
-  if (!metadata) {
-    session.writes.push(
-      Promise.reject(new Error("Photopea returned a file without its layer name.")),
-    );
+  const item = session.items[session.received];
+  if (!item) {
+    session.scriptFinished = true;
+    session.scriptResult = {
+      ok: false,
+      message: "Photopea returned more files than the plugin requested.",
+    };
+    maybeFinalizeExport();
     return;
   }
 
   session.received++;
 
   if (state.destination === "folder") {
-    const write = writeFileToDirectory(metadata.filename, buffer).then(
+    const write = writeFileToDirectory(item.filename, buffer).then(
       (filename) => {
         session.filenames.push(filename);
         return filename;
@@ -801,10 +815,10 @@ function handleExportBuffer(buffer) {
     session.writes.push(write);
   } else {
     session.zipEntries.push({
-      name: metadata.filename,
+      name: item.filename,
       data: new Uint8Array(buffer),
     });
-    session.filenames.push(metadata.filename);
+    session.filenames.push(item.filename);
   }
 
   state.statusText = `Exporting ${session.received} of ${session.expected} selected layer(s)…`;
@@ -952,12 +966,16 @@ async function maybeFinalizeExport() {
     !session ||
     session.finalizing ||
     !session.scriptFinished ||
-    session.received < session.expected
+    (session.scriptResult?.ok && session.received < session.expected)
   ) {
     return;
   }
 
   session.finalizing = true;
+  if (session.timeoutId) {
+    clearTimeout(session.timeoutId);
+    session.timeoutId = null;
+  }
 
   if (!session.scriptResult?.ok) {
     setStatus(
@@ -994,6 +1012,20 @@ async function maybeFinalizeExport() {
       error?.message || "One or more exported files could not be saved.",
     );
   }
+}
+
+function asArrayBuffer(value) {
+  if (value instanceof ArrayBuffer) return value;
+  if (ArrayBuffer.isView(value)) {
+    return value.buffer.slice(
+      value.byteOffset,
+      value.byteOffset + value.byteLength,
+    );
+  }
+  if (Object.prototype.toString.call(value) === "[object ArrayBuffer]") {
+    return value;
+  }
+  return null;
 }
 
 function downloadInstaller() {
@@ -1094,8 +1126,9 @@ window.addEventListener("message", async (event) => {
     return;
   }
 
-  if (event.data instanceof ArrayBuffer) {
-    handleExportBuffer(event.data);
+  const exportBuffer = asArrayBuffer(event.data);
+  if (exportBuffer) {
+    handleExportBuffer(exportBuffer);
     return;
   }
 
@@ -1103,9 +1136,22 @@ window.addEventListener("message", async (event) => {
 
   if (event.data.startsWith(META_PREFIX)) {
     try {
-      const result = JSON.parse(event.data.slice(META_PREFIX.length));
+      const envelope = JSON.parse(event.data.slice(META_PREFIX.length));
+      const requestId = envelope.requestId;
+      const result = envelope.result || envelope;
+      const activeInspection = state.activeInspection;
+
+      if (
+        requestId !== undefined &&
+        (!activeInspection || requestId !== activeInspection.requestId)
+      ) {
+        return;
+      }
+
+      const shouldExport = Boolean(activeInspection?.thenExport);
+      state.activeInspection = null;
+
       if (!result.ok) {
-        state.inspectThenExport = false;
         setStatus(
           "error",
           result.message || "Photopea could not read the selected layers.",
@@ -1116,8 +1162,6 @@ window.addEventListener("message", async (event) => {
       state.documentName = result.documentName || "Untitled";
       state.documentSource = result.source || "";
       state.layers = result.layers || [];
-      const shouldExport = state.inspectThenExport;
-      state.inspectThenExport = false;
 
       if (!state.layers.length) {
         setStatus("error", "Select one or more layers or groups first.");
@@ -1134,16 +1178,6 @@ window.addEventListener("message", async (event) => {
       }
     } catch {
       setStatus("error", "Photopea returned unreadable layer information.");
-    }
-    return;
-  }
-
-  if (event.data.startsWith(ITEM_PREFIX)) {
-    try {
-      const metadata = JSON.parse(event.data.slice(ITEM_PREFIX.length));
-      state.exportSession?.metadataQueue.push(metadata);
-    } catch {
-      setStatus("error", "Photopea returned an unreadable export name.");
     }
     return;
   }
@@ -1168,5 +1202,9 @@ render();
 
 if (state.embedded) {
   loadStoredDirectoryHandle();
-  setTimeout(() => inspectSelection(false), 180);
+  setTimeout(() => {
+    if (state.phase === "idle" && !state.activeInspection) {
+      inspectSelection(false);
+    }
+  }, 180);
 }
