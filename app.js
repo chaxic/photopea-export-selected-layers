@@ -6,7 +6,7 @@ const READY_MESSAGE = "EXPORT_SELECTED_DIRECTORY_READY";
 const CANCEL_MESSAGE = "EXPORT_SELECTED_DIRECTORY_CANCELLED";
 const REPOSITORY_URL =
   "https://github.com/chaxic/photopea-export-selected-layers";
-const PLUGIN_VERSION = "1.0.4";
+const PLUGIN_VERSION = "1.0.5";
 const EXPORT_TIMEOUT_MS = 60000;
 
 const DB_NAME = "photopea-export-selected-layers";
@@ -387,7 +387,10 @@ function panelHtml() {
           </svg>
         </div>
         <div>
-          <h1>Export Selected Layers</h1>
+          <div class="panel-title-row">
+            <h1>Export Selected Layers</h1>
+            <span class="version-badge">v${escapeHtml(PLUGIN_VERSION)}</span>
+          </div>
           <p>Save each selected layer as its own file</p>
         </div>
       </header>
