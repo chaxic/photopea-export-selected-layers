@@ -3,6 +3,12 @@
 A lightweight Photopea sidebar plugin for exporting selected layers as
 individual image files.
 
+**Current version:** v1.0.12  
+**Tested with:** Photopea 5.6 (`app.version` 30), verified 27 July 2026
+
+[Install the current version](https://chaxic.github.io/photopea-export-selected-layers/?v=1.0.12)
+· [View the changelog](CHANGELOG.md)
+
 ## Features
 
 - Export only the currently selected layers and groups
@@ -17,10 +23,21 @@ individual image files.
 ## Install
 
 1. Open the
-   [installer page](https://chaxic.github.io/photopea-export-selected-layers/).
+   [v1.0.12 installer page](https://chaxic.github.io/photopea-export-selected-layers/?v=1.0.12).
 2. Download `export-selected-layers-photopea.json`.
 3. In Photopea, open **Window → Plugins → Add Plugin**.
 4. Select the downloaded JSON file.
+
+## Compatibility
+
+| Plugin version | Photopea release | Scripting `app.version` | Verified |
+| --- | --- | --- | --- |
+| 1.0.12 | 5.6 | 30 | 27 July 2026 |
+
+Photopea is a web application and can change between formal releases. The
+compatibility row records the build family and scripting version used for the
+live export test; it is not a guarantee that older Photopea builds support the
+plugin.
 
 ## Destination behavior
 
